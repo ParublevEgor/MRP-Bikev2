@@ -1,0 +1,6 @@
+@MRP_Bikev2_HostAddress = http://localhost:5249
+
+GET {{MRP_Bikev2_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
