@@ -7,7 +7,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<BikeContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("Default")));
 
-// JSON (фикс циклов)
+
 builder.Services.AddControllers()
     .AddJsonOptions(x =>
         x.JsonSerializerOptions.ReferenceHandler =
