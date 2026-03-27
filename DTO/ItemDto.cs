@@ -4,8 +4,8 @@ public class ItemDto
 {
     public int ItemID { get; set; }
     public string? ItemCode { get; set; }
-    public string ItemName { get; set; }
-    public string ItemType { get; set; }
+    public string ItemName { get; set; } = string.Empty;
+    public string ItemType { get; set; } = string.Empty;
 
     public decimal? UnitCost { get; set; }
     public string? Unit { get; set; }

@@ -1,0 +1,85 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: #f5f6f8;
+  color: #1f2937;
+}
+.container {
+  max-width: 1200px;
+  margin: 24px auto;
+  background: #fff;
+  border: 1px solid #dbe1e8;
+  border-radius: 10px;
+  padding: 16px;
+}
+h1 { margin: 0 0 12px; }
+.top-actions { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
+.tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+.tab {
+  border: 1px solid #cfd8e3;
+  background: #fff;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.tab--active { background: #eaf2ff; border-color: #9cc0ff; }
+.view { display: none; }
+.view--active { display: block; }
+.section-actions { margin-bottom: 10px; }
+.btn {
+  border: 1px solid #c9d3df;
+  background: #fff;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.btn--primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+.btn--danger { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+.btn--small { padding: 6px 10px; font-size: 12px; }
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  border: 1px solid #dbe1e8;
+}
+.table th, .table td {
+  border-bottom: 1px solid #e5eaf0;
+  padding: 8px;
+  text-align: left;
+}
+.table th { background: #f3f6fa; }
+.table td:last-child { white-space: nowrap; }
+.modal {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 1000;
+}
+.modal[hidden] { display: none !important; }
+.modal__backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.25); }
+.modal__dialog {
+  position: relative;
+  width: min(520px, 95%);
+  background: #fff;
+  border-radius: 10px;
+  border: 1px solid #dbe1e8;
+}
+.modal__head { display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid #e5eaf0; }
+.modal__body { padding: 12px; }
+.form-grid { display: grid; gap: 10px; }
+.form-row { display: grid; gap: 5px; }
+.form-row input, .form-row select {
+  border: 1px solid #cfd8e3;
+  border-radius: 8px;
+  padding: 8px;
+}
+.form-actions { display: flex; justify-content: end; gap: 8px; margin-top: 10px; }
+.toast-host { position: fixed; right: 12px; bottom: 12px; display: grid; gap: 8px; z-index: 1100; }
+.toast { background: #fff; border: 1px solid #dbe1e8; padding: 10px 12px; border-radius: 8px; }
+.toast--ok { border-color: #86efac; }
+.toast--err { border-color: #fca5a5; }
+.empty { color: #64748b; padding: 14px; }
+.mono { font-family: Consolas, monospace; }
+.link { color: #2563eb; text-decoration: none; }

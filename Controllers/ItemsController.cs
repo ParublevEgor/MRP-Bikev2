@@ -3,7 +3,6 @@ using Microsoft.EntityFrameworkCore;
 using MRP.Api.Data;
 using MRP.Api.DTO;
 using MRP.Api.Models;
-using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
@@ -30,7 +29,6 @@ public class ItemsController : ControllerBase
                 ItemCode = i.ItemCode,
                 ItemName = i.ItemName,
                 ItemType = i.ItemType.ToString(),
-
                 Unit = i.Unit,
                 UnitCost = i.UnitCost,
                 LeadTimeDays = i.LeadTimeDays
@@ -38,6 +36,26 @@ public class ItemsController : ControllerBase
             .ToListAsync();
 
         return Ok(items);
+    }
+
+    [HttpGet("{id:int}")]
+    public async Task<ActionResult<ItemDto>> GetById(int id)
+    {
+        var dto = await _context.Items
+            .Where(i => i.ItemID == id)
+            .Select(i => new ItemDto
+            {
+                ItemID = i.ItemID,
+                ItemCode = i.ItemCode,
+                ItemName = i.ItemName,
+                ItemType = i.ItemType.ToString(),
+                Unit = i.Unit,
+                UnitCost = i.UnitCost,
+                LeadTimeDays = i.LeadTimeDays
+            })
+            .FirstOrDefaultAsync();
+
+        return dto == null ? NotFound() : Ok(dto);
     }
 
     [HttpPost]
@@ -60,10 +78,10 @@ public class ItemsController : ControllerBase
         _context.Items.Add(item);
         await _context.SaveChangesAsync();
 
-        return Ok(item);
+        return Ok(ToDto(item));
     }
 
-    [HttpPut("{id}")]
+    [HttpPut("{id:int}")]
     public async Task<IActionResult> Update(int id, ItemDto dto)
     {
         var item = await _context.Items.FindAsync(id);
@@ -82,24 +100,42 @@ public class ItemsController : ControllerBase
 
         await _context.SaveChangesAsync();
 
-        return Ok(item);
+        return Ok(ToDto(item));
     }
 
-    [HttpDelete("{id}")]
+    [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
     {
-        var item = await _context.Items.FindAsync(id);
-        if (item == null) return NotFound();
+        // В БД у Boms два FK на Items с NO ACTION — SQL Server не делает каскад сам, а ClientCascade
+        // при Remove(item) не всегда гарантирует порядок DELETE. Удаляем явно: склад → BOM → номенклатура.
+        var bomIds = await _context.Boms
+            .AsNoTracking()
+            .Where(b => b.ParentItemID == id || b.ChildItemID == id)
+            .Select(b => b.BOMID)
+            .ToListAsync();
 
-        var used = await _context.Boms
-            .AnyAsync(b => b.ParentItemID == id || b.ChildItemID == id);
+        if (bomIds.Count > 0)
+        {
+            await _context.StockOperations
+                .Where(s => bomIds.Contains(s.SpecificationId))
+                .ExecuteDeleteAsync();
+            await _context.Boms
+                .Where(b => bomIds.Contains(b.BOMID))
+                .ExecuteDeleteAsync();
+        }
 
-        if (used)
-            return BadRequest("Нельзя удалить: Item используется в BOM");
-
-        _context.Items.Remove(item);
-        await _context.SaveChangesAsync();
-
-        return NoContent();
+        var deleted = await _context.Items.Where(i => i.ItemID == id).ExecuteDeleteAsync();
+        return deleted == 0 ? NotFound() : NoContent();
     }
+
+    private static ItemDto ToDto(Item i) => new()
+    {
+        ItemID = i.ItemID,
+        ItemCode = i.ItemCode,
+        ItemName = i.ItemName,
+        ItemType = i.ItemType.ToString(),
+        Unit = i.Unit,
+        UnitCost = i.UnitCost,
+        LeadTimeDays = i.LeadTimeDays
+    };
 }

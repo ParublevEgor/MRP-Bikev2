@@ -14,6 +14,6 @@ public class Bom
     [Column(TypeName = "decimal(10,2)")]
     public decimal Quantity { get; set; }
 
-    public Item ParentItem { get; set; }
-    public Item ChildItem { get; set; }
+    public Item ParentItem { get; set; } = null!;
+    public Item ChildItem { get; set; } = null!;
 }

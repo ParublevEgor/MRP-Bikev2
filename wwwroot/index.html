@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MRP система</title>
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>MRP система</h1>
+
+    <div class="top-actions">
+      <button class="btn" id="btnRefresh" type="button">Обновить данные</button>
+      <a class="link" href="/swagger" target="_blank" rel="noopener">Swagger</a>
+    </div>
+
+    <div class="tabs">
+      <button class="tab tab--active" data-view="items" type="button">Номенклатура</button>
+      <button class="tab" data-view="boms" type="button">Спецификация</button>
+      <button class="tab" data-view="stock" type="button">Склад</button>
+    </div>
+
+    <div id="toastHost" class="toast-host"></div>
+
+    <section id="view-items" class="view view--active">
+      <div class="section-actions">
+        <button class="btn btn--primary" id="btnAddItem" type="button">Добавить позицию</button>
+      </div>
+      <table class="table" id="tableItems">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Код</th>
+            <th>Название</th>
+            <th>Тип</th>
+            <th>Ед.</th>
+            <th>Цена</th>
+            <th>Срок, дн.</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="view-boms" class="view">
+      <div class="section-actions">
+        <button class="btn btn--primary" id="btnAddBom" type="button">Добавить BOM</button>
+      </div>
+      <table class="table" id="tableBoms">
+        <thead>
+          <tr>
+            <th>ID BOM</th>
+            <th>Родитель</th>
+            <th>Компонент</th>
+            <th>Количество</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="view-stock" class="view">
+      <div class="section-actions">
+        <button class="btn btn--primary" id="btnAddStock" type="button">Добавить операцию</button>
+      </div>
+      <table class="table" id="tableStock">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>BOM ID</th>
+            <th>Дата</th>
+            <th>Количество</th>
+            <th>Тип</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </div>
+
+  <div class="modal" id="modal" hidden>
+    <div class="modal__backdrop" data-close-modal></div>
+    <div class="modal__dialog">
+      <div class="modal__head">
+        <h2 id="modalTitle">Форма</h2>
+        <button class="btn btn--small" data-close-modal type="button">Закрыть</button>
+      </div>
+      <div class="modal__body" id="modalBody"></div>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
