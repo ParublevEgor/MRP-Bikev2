@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace MRP.Api.DTO;
 
-public class ItemDto
+public class ItemStockBalanceDto
 {
     [JsonPropertyName("itemId")]
     public int ItemID { get; set; }
@@ -13,12 +13,18 @@ public class ItemDto
     [JsonPropertyName("itemName")]
     public string ItemName { get; set; } = string.Empty;
 
-    [JsonPropertyName("itemType")]
-    public string ItemType { get; set; } = string.Empty;
-
-    [JsonPropertyName("unitCost")]
-    public decimal? UnitCost { get; set; }
-
     [JsonPropertyName("unit")]
     public string? Unit { get; set; }
+
+    [JsonPropertyName("receiptQty")]
+    public decimal ReceiptQty { get; set; }
+
+    [JsonPropertyName("issueQty")]
+    public decimal IssueQty { get; set; }
+
+    [JsonPropertyName("adjustmentQty")]
+    public decimal AdjustmentQty { get; set; }
+
+    [JsonPropertyName("currentStock")]
+    public decimal CurrentStock { get; set; }
 }

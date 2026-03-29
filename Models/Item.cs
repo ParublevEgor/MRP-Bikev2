@@ -22,6 +22,4 @@ public class Item
     public decimal? UnitCost { get; set; }
 
     public string? Unit { get; set; }
-
-    public int? LeadTimeDays { get; set; }
 }

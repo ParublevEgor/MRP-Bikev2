@@ -3,7 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using MRP.Api.Data;
 using MRP.Api.DTO;
 using MRP.Api.Models;
-using System.Collections.Generic;
+using System;
 using System.Threading.Tasks;
 
 namespace MRP.Api.Controllers;
@@ -58,14 +58,20 @@ public class StockOperationsController : ControllerBase
     public async Task<IActionResult> Create(StockOperationDto dto)
     {
         if (!Enum.TryParse<StockOperationType>(dto.OperationType, true, out var opType))
-            return BadRequest("Invalid OperationType. Use Receipt, Issue, Adjustment.");
+            return BadRequest("Неверный тип операции. Допустимо: Receipt, Issue, Adjustment.");
 
         if (dto.Quantity <= 0)
-            return BadRequest("Quantity must be greater than zero.");
+            return BadRequest("Количество должно быть больше нуля.");
+
+        if (dto.SpecificationId <= 0)
+            return BadRequest("Укажите корректный ID строки спецификации (BOM).");
+
+        var err = ValidateDate(dto.Date);
+        if (err != null) return BadRequest(err);
 
         var bomExists = await _context.Boms.AnyAsync(b => b.BOMID == dto.SpecificationId);
         if (!bomExists)
-            return BadRequest("SpecificationId (BOM) does not exist.");
+            return BadRequest("Строка спецификации с таким ID не найдена.");
 
         var entity = new StockOperation
         {
@@ -85,17 +91,23 @@ public class StockOperationsController : ControllerBase
     public async Task<IActionResult> Update(int id, StockOperationDto dto)
     {
         if (!Enum.TryParse<StockOperationType>(dto.OperationType, true, out var opType))
-            return BadRequest("Invalid OperationType. Use Receipt, Issue, Adjustment.");
+            return BadRequest("Неверный тип операции. Допустимо: Receipt, Issue, Adjustment.");
 
         if (dto.Quantity <= 0)
-            return BadRequest("Quantity must be greater than zero.");
+            return BadRequest("Количество должно быть больше нуля.");
+
+        if (dto.SpecificationId <= 0)
+            return BadRequest("Укажите корректный ID строки спецификации (BOM).");
+
+        var err = ValidateDate(dto.Date);
+        if (err != null) return BadRequest(err);
 
         var entity = await _context.StockOperations.FindAsync(id);
         if (entity == null) return NotFound();
 
         var bomExists = await _context.Boms.AnyAsync(b => b.BOMID == dto.SpecificationId);
         if (!bomExists)
-            return BadRequest("SpecificationId (BOM) does not exist.");
+            return BadRequest("Строка спецификации с таким ID не найдена.");
 
         entity.SpecificationId = dto.SpecificationId;
         entity.Date = dto.Date;
@@ -117,6 +129,13 @@ public class StockOperationsController : ControllerBase
         await _context.SaveChangesAsync();
 
         return NoContent();
+    }
+
+    private static string? ValidateDate(DateTime date)
+    {
+        if (date == default)
+            return "Укажите дату и время операции.";
+        return null;
     }
 
     private static StockOperationDto ToDto(StockOperation s) => new()

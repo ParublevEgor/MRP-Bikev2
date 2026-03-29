@@ -3,82 +3,114 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MRP система</title>
-  <link rel="stylesheet" href="css/app.css" />
+  <title>MRP система модели «Велосипед»</title>
+  <link rel="stylesheet" href="css/app.css?v=5" />
 </head>
 <body>
   <div class="container">
-    <h1>MRP система</h1>
+    <h1>MRP система модели «Велосипед»</h1>
+
+    <div id="apiError" class="api-error" hidden></div>
 
     <div class="top-actions">
-      <button class="btn" id="btnRefresh" type="button">Обновить данные</button>
-      <a class="link" href="/swagger" target="_blank" rel="noopener">Swagger</a>
+      <button class="btn" id="btnRefresh" type="button">Обновить</button>
+      <a class="link" href="/swagger/index.html" target="_blank" rel="noopener">Swagger</a>
     </div>
 
     <div class="tabs">
       <button class="tab tab--active" data-view="items" type="button">Номенклатура</button>
       <button class="tab" data-view="boms" type="button">Спецификация</button>
       <button class="tab" data-view="stock" type="button">Склад</button>
+      <button class="tab" data-view="balances" type="button">Остатки</button>
     </div>
 
     <div id="toastHost" class="toast-host"></div>
 
     <section id="view-items" class="view view--active">
+      <p class="section-hint">Справочник материалов и изделий.</p>
       <div class="section-actions">
-        <button class="btn btn--primary" id="btnAddItem" type="button">Добавить позицию</button>
+        <button class="btn btn--primary" id="btnAddItem" type="button">Добавить</button>
       </div>
+      <div class="table-wrap">
       <table class="table" id="tableItems">
         <thead>
           <tr>
             <th>ID</th>
             <th>Код</th>
-            <th>Название</th>
+            <th>Наименование</th>
             <th>Тип</th>
             <th>Ед.</th>
-            <th>Цена</th>
-            <th>Срок, дн.</th>
+            <th>Себестоимость</th>
             <th></th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
+      </div>
     </section>
 
     <section id="view-boms" class="view">
+      <p class="section-hint">Сколько компонента уходит на 1 ед. родителя (дерево сборки).</p>
       <div class="section-actions">
-        <button class="btn btn--primary" id="btnAddBom" type="button">Добавить BOM</button>
+        <button class="btn btn--primary" id="btnAddBom" type="button">Добавить строку</button>
       </div>
+      <div class="table-wrap">
       <table class="table" id="tableBoms">
         <thead>
           <tr>
-            <th>ID BOM</th>
+            <th>ID</th>
             <th>Родитель</th>
             <th>Компонент</th>
-            <th>Количество</th>
+            <th>Кол-во</th>
             <th></th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
+      </div>
     </section>
 
     <section id="view-stock" class="view">
+      <p class="section-hint">Движения по строке BOM; остаток считается для <strong>компонента</strong> этой строки.</p>
       <div class="section-actions">
         <button class="btn btn--primary" id="btnAddStock" type="button">Добавить операцию</button>
       </div>
+      <div class="table-wrap">
       <table class="table" id="tableStock">
         <thead>
           <tr>
             <th>ID</th>
-            <th>BOM ID</th>
+            <th>Строка BOM</th>
             <th>Дата</th>
-            <th>Количество</th>
-            <th>Тип</th>
+            <th>Кол-во</th>
+            <th>Операция</th>
             <th></th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
+      </div>
+    </section>
+
+    <section id="view-balances" class="view">
+      <p class="section-hint">Итог = приход − расход + корректировка.</p>
+      <div class="table-wrap">
+      <table class="table table--nums" id="tableBalances">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Код</th>
+            <th>Наименование</th>
+            <th>Ед.</th>
+            <th>Приход</th>
+            <th>Расход</th>
+            <th>Корр.</th>
+            <th>Итог</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      </div>
     </section>
   </div>
 
@@ -93,6 +125,6 @@
     </div>
   </div>
 
-  <script src="js/app.js"></script>
+  <script src="js/app.js?v=4"></script>
 </body>
 </html>

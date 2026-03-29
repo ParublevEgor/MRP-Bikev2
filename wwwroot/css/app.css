@@ -13,7 +13,29 @@ body {
   border-radius: 10px;
   padding: 16px;
 }
-h1 { margin: 0 0 12px; }
+h1 { margin: 0 0 6px; font-size: 1.35rem; font-weight: 700; }
+.subtitle {
+  margin: 0 0 14px;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.4;
+}
+.section-hint {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.35;
+}
+.section-hint strong { color: #475569; font-weight: 600; }
+.api-error {
+  background: #fee2e2;
+  border: 1px solid #f87171;
+  color: #991b1b;
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
 .top-actions { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
 .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
 .tab {
@@ -48,8 +70,27 @@ h1 { margin: 0 0 12px; }
   padding: 8px;
   text-align: left;
 }
-.table th { background: #f3f6fa; }
+.table th { background: #f3f6fa; font-size: 13px; font-weight: 600; }
 .table td:last-child { white-space: nowrap; }
+#view-balances .table td:last-child { white-space: normal; }
+.table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 8px;
+}
+.table--nums .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.table--nums .num--total {
+  font-weight: 700;
+  color: #0f172a;
+}
+#tableBalances th:nth-last-child(-n+4),
+#tableBalances td:nth-last-child(-n+4) {
+  text-align: center;
+}
 .modal {
   position: fixed;
   inset: 0;
@@ -67,6 +108,7 @@ h1 { margin: 0 0 12px; }
   border: 1px solid #dbe1e8;
 }
 .modal__head { display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid #e5eaf0; }
+.modal__head h2 { margin: 0; font-size: 1.05rem; font-weight: 600; }
 .modal__body { padding: 12px; }
 .form-grid { display: grid; gap: 10px; }
 .form-row { display: grid; gap: 5px; }
@@ -74,6 +116,21 @@ h1 { margin: 0 0 12px; }
   border: 1px solid #cfd8e3;
   border-radius: 8px;
   padding: 8px;
+}
+.input-with-suffix {
+  position: relative;
+}
+.input-with-suffix input {
+  width: 100%;
+  padding-right: 34px;
+}
+.input-suffix {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #475569;
+  pointer-events: none;
 }
 .form-actions { display: flex; justify-content: end; gap: 8px; margin-top: 10px; }
 .toast-host { position: fixed; right: 12px; bottom: 12px; display: grid; gap: 8px; z-index: 1100; }

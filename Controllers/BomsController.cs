@@ -103,15 +103,15 @@ public class BomsController : ControllerBase
     private async Task<string?> ValidateBomAsync(BomDto dto, int? excludeBomId)
     {
         if (dto.ParentItemID == dto.ChildItemID)
-            return "ParentItemID and ChildItemID must differ.";
+            return "Родитель и компонент должны быть разными позициями.";
 
         if (dto.Quantity <= 0)
-            return "Quantity must be greater than zero.";
+            return "Количество должно быть больше нуля.";
 
         var parentOk = await _context.Items.AnyAsync(i => i.ItemID == dto.ParentItemID);
         var childOk = await _context.Items.AnyAsync(i => i.ItemID == dto.ChildItemID);
         if (!parentOk || !childOk)
-            return "ParentItemID or ChildItemID does not exist.";
+            return "Указан несуществующий родитель или компонент (проверьте ID).";
 
         var duplicate = await _context.Boms
             .AnyAsync(b =>
@@ -120,7 +120,7 @@ public class BomsController : ControllerBase
                 (!excludeBomId.HasValue || b.BOMID != excludeBomId.Value));
 
         if (duplicate)
-            return "A BOM row for this parent/child pair already exists.";
+            return "Такая пара «родитель → компонент» уже есть в спецификации.";
 
         return null;
     }

@@ -30,8 +30,7 @@ public class ItemsController : ControllerBase
                 ItemName = i.ItemName,
                 ItemType = i.ItemType.ToString(),
                 Unit = i.Unit,
-                UnitCost = i.UnitCost,
-                LeadTimeDays = i.LeadTimeDays
+                UnitCost = i.UnitCost
             })
             .ToListAsync();
 
@@ -50,29 +49,86 @@ public class ItemsController : ControllerBase
                 ItemName = i.ItemName,
                 ItemType = i.ItemType.ToString(),
                 Unit = i.Unit,
-                UnitCost = i.UnitCost,
-                LeadTimeDays = i.LeadTimeDays
+                UnitCost = i.UnitCost
             })
             .FirstOrDefaultAsync();
 
         return dto == null ? NotFound() : Ok(dto);
     }
 
+    [HttpGet("stock-balance")]
+    public async Task<ActionResult<IEnumerable<ItemStockBalanceDto>>> GetStockBalance()
+    {
+        var raw = await _context.StockOperations
+            .Join(
+                _context.Boms,
+                s => s.SpecificationId,
+                b => b.BOMID,
+                (s, b) => new { b.ChildItemID, s.OperationType, s.Quantity })
+            .GroupBy(x => x.ChildItemID)
+            .Select(g => new
+            {
+                ItemId = g.Key,
+                ReceiptQty = g.Where(x => x.OperationType == StockOperationType.Receipt).Sum(x => (decimal?)x.Quantity) ?? 0m,
+                IssueQty = g.Where(x => x.OperationType == StockOperationType.Issue).Sum(x => (decimal?)x.Quantity) ?? 0m,
+                AdjustmentQty = g.Where(x => x.OperationType == StockOperationType.Adjustment).Sum(x => (decimal?)x.Quantity) ?? 0m
+            })
+            .ToListAsync();
+
+        var byItem = raw.ToDictionary(
+            x => x.ItemId,
+            x => new { x.ReceiptQty, x.IssueQty, x.AdjustmentQty });
+
+        var result = await _context.Items
+            .OrderBy(i => i.ItemID)
+            .Select(i => new ItemStockBalanceDto
+            {
+                ItemID = i.ItemID,
+                ItemCode = i.ItemCode,
+                ItemName = i.ItemName,
+                Unit = i.Unit
+            })
+            .ToListAsync();
+
+        foreach (var item in result)
+        {
+            if (!byItem.TryGetValue(item.ItemID, out var agg))
+                continue;
+
+            item.ReceiptQty = agg.ReceiptQty;
+            item.IssueQty = agg.IssueQty;
+            item.AdjustmentQty = agg.AdjustmentQty;
+            item.CurrentStock = agg.ReceiptQty - agg.IssueQty + agg.AdjustmentQty;
+        }
+
+        return Ok(result);
+    }
+
     [HttpPost]
     public async Task<IActionResult> Create(ItemDto dto)
     {
+        var err = ValidateItemDto(dto);
+        if (err != null) return BadRequest(err);
+
         if (!Enum.TryParse<ItemType>(dto.ItemType, true, out var itemType))
-            return BadRequest("Invalid ItemType");
+            return BadRequest("Неверный тип. Допустимо: Product, Assembly, Component, Material.");
+
+        dto.ItemName = dto.ItemName.Trim();
+        dto.ItemCode = string.IsNullOrWhiteSpace(dto.ItemCode) ? null : dto.ItemCode.Trim();
+
+        if (dto.ItemCode != null)
+        {
+            var dup = await _context.Items.AnyAsync(i => i.ItemCode == dto.ItemCode);
+            if (dup) return BadRequest("Код позиции уже занят.");
+        }
 
         var item = new Item
         {
             ItemCode = dto.ItemCode,
             ItemName = dto.ItemName,
             ItemType = itemType,
-
-            Unit = dto.Unit,
-            UnitCost = dto.UnitCost,
-            LeadTimeDays = dto.LeadTimeDays
+            Unit = string.IsNullOrWhiteSpace(dto.Unit) ? null : dto.Unit.Trim(),
+            UnitCost = dto.UnitCost
         };
 
         _context.Items.Add(item);
@@ -84,19 +140,29 @@ public class ItemsController : ControllerBase
     [HttpPut("{id:int}")]
     public async Task<IActionResult> Update(int id, ItemDto dto)
     {
+        var err = ValidateItemDto(dto);
+        if (err != null) return BadRequest(err);
+
+        if (!Enum.TryParse<ItemType>(dto.ItemType, true, out var itemType))
+            return BadRequest("Неверный тип. Допустимо: Product, Assembly, Component, Material.");
+
         var item = await _context.Items.FindAsync(id);
         if (item == null) return NotFound();
 
-        if (!Enum.TryParse<ItemType>(dto.ItemType, true, out var itemType))
-            return BadRequest("Invalid ItemType");
+        dto.ItemName = dto.ItemName.Trim();
+        dto.ItemCode = string.IsNullOrWhiteSpace(dto.ItemCode) ? null : dto.ItemCode.Trim();
+
+        if (dto.ItemCode != null)
+        {
+            var dup = await _context.Items.AnyAsync(i => i.ItemCode == dto.ItemCode && i.ItemID != id);
+            if (dup) return BadRequest("Код позиции уже занят.");
+        }
 
         item.ItemCode = dto.ItemCode;
         item.ItemName = dto.ItemName;
         item.ItemType = itemType;
-
-        item.Unit = dto.Unit;
+        item.Unit = string.IsNullOrWhiteSpace(dto.Unit) ? null : dto.Unit.Trim();
         item.UnitCost = dto.UnitCost;
-        item.LeadTimeDays = dto.LeadTimeDays;
 
         await _context.SaveChangesAsync();
 
@@ -106,8 +172,6 @@ public class ItemsController : ControllerBase
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
     {
-        // В БД у Boms два FK на Items с NO ACTION — SQL Server не делает каскад сам, а ClientCascade
-        // при Remove(item) не всегда гарантирует порядок DELETE. Удаляем явно: склад → BOM → номенклатура.
         var bomIds = await _context.Boms
             .AsNoTracking()
             .Where(b => b.ParentItemID == id || b.ChildItemID == id)
@@ -128,6 +192,17 @@ public class ItemsController : ControllerBase
         return deleted == 0 ? NotFound() : NoContent();
     }
 
+    private static string? ValidateItemDto(ItemDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.ItemName))
+            return "Укажите наименование.";
+        if (dto.ItemName.Trim().Length > 100)
+            return "Наименование не длиннее 100 символов.";
+        if (!string.IsNullOrEmpty(dto.ItemCode) && dto.ItemCode.Length > 20)
+            return "Код не длиннее 20 символов.";
+        return null;
+    }
+
     private static ItemDto ToDto(Item i) => new()
     {
         ItemID = i.ItemID,
@@ -135,7 +210,6 @@ public class ItemsController : ControllerBase
         ItemName = i.ItemName,
         ItemType = i.ItemType.ToString(),
         Unit = i.Unit,
-        UnitCost = i.UnitCost,
-        LeadTimeDays = i.LeadTimeDays
+        UnitCost = i.UnitCost
     };
 }
