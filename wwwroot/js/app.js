@@ -28,6 +28,7 @@
     type: String(pick(x, ["itemType", "ItemType"], "") ?? ""),
     unit: pick(x, ["unit", "Unit"], ""),
     unitCost: pick(x, ["unitCost", "UnitCost"], null),
+    sellingPrice: pick(x, ["sellingPrice", "SellingPrice"], null),
   });
 
   const normalizeBom = (x) => ({
@@ -205,6 +206,112 @@
     renderBoms();
     renderStock();
     renderBalances();
+    populateProductSelect();
+    if (document.getElementById("view-production")?.classList.contains("view--active")) {
+      fetchCapacity();
+      fetchProductionStats();
+    }
+  }
+
+  function populateProductSelect() {
+    const sel = document.getElementById("selectProduct");
+    if (!sel) return;
+    const products = state.items.filter((x) => x.type === "Product");
+    const prev = sel.value;
+    if (!products.length) {
+      sel.innerHTML = '<option value="">— нет готовой продукции —</option>';
+      return;
+    }
+    sel.innerHTML = products.map((p) => `<option value="${p.id}">${esc(itemLabel(p.id))}</option>`).join("");
+    const still = products.some((p) => String(p.id) === prev);
+    const bike = state.items.find((x) => x.code === "BIKE" && x.type === "Product");
+    if (still) sel.value = prev;
+    else if (bike && products.some((p) => p.id === bike.id)) sel.value = String(bike.id);
+    else sel.value = String(products[0].id);
+  }
+
+  function renderCapacityHtml(c) {
+    const maxQty = Number(pick(c, ["maxQty", "MaxQty"], 0));
+    const limId = pick(c, ["limitingItemId", "LimitingItemId"], null);
+    const lines = pick(c, ["lines", "Lines"], []) || [];
+    const limNum = limId != null ? Number(limId) : null;
+    const limName =
+      limNum != null && Number.isFinite(limNum)
+        ? state.items.find((x) => x.id === limNum)?.name || `ID ${limNum}`
+        : null;
+    const limText = limName ? ` Ограничивает: ${esc(limName)}.` : "";
+    const rows = lines.length
+      ? lines
+          .map((l) => {
+            const name = pick(l, ["childName", "ChildName"], "—");
+            const per = pick(l, ["qtyPerUnit", "QtyPerUnit"], 0);
+            const stock = pick(l, ["currentStock", "CurrentStock"], 0);
+            const m = pick(l, ["maxFromThisLine", "MaxFromThisLine"], 0);
+            return `<tr><td>${esc(name)}</td><td>${toQty(per)}</td><td>${toQty(stock)}</td><td>${m}</td></tr>`;
+          })
+          .join("")
+      : '<tr><td colspan="4"><div class="empty">Нет строк BOM</div></td></tr>';
+    return `
+      <p class="capacity-max"><strong>Можно произвести:</strong> ${maxQty} шт.${limText}</p>
+      <div class="table-wrap">
+        <table class="table table--compact">
+          <thead>
+            <tr><th>Компонент</th><th>На 1 шт.</th><th>Остаток</th><th>Макс. по строке</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  async function fetchCapacity() {
+    const sel = document.getElementById("selectProduct");
+    const box = document.getElementById("capacityInfo");
+    if (!sel || !box) return;
+    const id = Number(sel.value);
+    if (!id) {
+      box.innerHTML = '<p class="empty">Добавьте готовую продукцию или нажмите «Приход материалов…».</p>';
+      return;
+    }
+    try {
+      const c = await api(`/api/Production/capacity?productItemId=${id}`);
+      box.innerHTML = renderCapacityHtml(c);
+    } catch (err) {
+      box.innerHTML = `<p class="empty capacity-err">${esc(err.message || String(err))}</p>`;
+    }
+  }
+
+  function renderProductionStatsHtml(s) {
+    const pq = Number(pick(s, ["producedQty", "ProducedQty"], 0));
+    const cpb = pick(s, ["costPerBike", "CostPerBike"], 0);
+    const tmc = pick(s, ["totalMaterialCost", "TotalMaterialCost"], 0);
+    const tr = pick(s, ["totalRevenue", "TotalRevenue"], null);
+    const tp = pick(s, ["totalProfit", "TotalProfit"], null);
+    const sp = pick(s, ["sellingPrice", "SellingPrice"], null);
+    return `<div class="production-stats">
+      <p><strong>Выпущено, шт.:</strong> ${toQty(pq)}</p>
+      <p><strong>Себестоимость материалов на 1 шт.:</strong> ${toMoney(cpb)}</p>
+      <p><strong>Себестоимость выпуска (оценка):</strong> ${toMoney(tmc)}</p>
+      <p><strong>Отпускная цена:</strong> ${sp != null && sp !== "" ? toMoney(sp) : "— (в номенклатуре)"}</p>
+      <p><strong>Выручка:</strong> ${tr != null && tr !== "" ? toMoney(tr) : "—"}</p>
+      <p><strong>Прибыль:</strong> ${tp != null && tp !== "" ? toMoney(tp) : "—"}</p>
+    </div>`;
+  }
+
+  async function fetchProductionStats() {
+    const sel = document.getElementById("selectProduct");
+    const box = document.getElementById("productionStats");
+    if (!sel || !box) return;
+    const id = Number(sel.value);
+    if (!id) {
+      box.innerHTML = "";
+      return;
+    }
+    try {
+      const s = await api(`/api/Production/stats?productItemId=${id}`);
+      box.innerHTML = renderProductionStatsHtml(s);
+    } catch (err) {
+      box.innerHTML = `<p class="empty capacity-err">${esc(err.message || String(err))}</p>`;
+    }
   }
 
   function renderItems() {
@@ -372,6 +479,13 @@
             <span class="input-suffix">₽</span>
           </div>
         </div>
+        <div class="form-row">
+          <label>Отпускная цена (для готовой продукции)</label>
+          <div class="input-with-suffix">
+            <input name="sellingPrice" type="number" step="1" min="0" value="${row?.sellingPrice ?? ""}" placeholder="необязательно" />
+            <span class="input-suffix">₽</span>
+          </div>
+        </div>
         <div class="form-actions">
           <button class="btn" type="button" data-close-modal>Отмена</button>
           <button class="btn btn--primary" type="submit">${edit ? "Сохранить" : "Создать"}</button>
@@ -389,6 +503,7 @@
         itemType: String(fd.get("itemType") || "Component"),
         unit: fd.get("unit") || null,
         unitCost: fd.get("unitCost") === "" ? null : Number(fd.get("unitCost")),
+        sellingPrice: fd.get("sellingPrice") === "" ? null : Number(fd.get("sellingPrice")),
       };
 
       try {
@@ -548,12 +663,70 @@
   function setView(name) {
     document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("tab--active", x.dataset.view === name));
     document.querySelectorAll(".view").forEach((x) => x.classList.toggle("view--active", x.id === `view-${name}`));
+    if (name === "production") {
+      populateProductSelect();
+      fetchCapacity();
+      fetchProductionStats();
+    }
   }
 
   document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
   document.getElementById("btnAddItem").addEventListener("click", () => openItemModal(null));
   document.getElementById("btnAddBom").addEventListener("click", () => openBomModal(null));
   document.getElementById("btnAddStock").addEventListener("click", () => openStockModal(null));
+  document.getElementById("selectProduct")?.addEventListener("change", () => {
+    fetchCapacity();
+    fetchProductionStats();
+  });
+
+  document.getElementById("btnReceiptMaterials")?.addEventListener("click", async () => {
+    try {
+      const sel = document.getElementById("selectProduct");
+      const pid = Number(sel?.value);
+      const body = { bikeCount: 10 };
+      if (pid > 0) body.productItemId = pid;
+      await api("/api/Production/receipt-materials", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      toast("Материалы оприходованы на 10 велосипедов", true);
+      await loadAll();
+      const bike = state.items.find((x) => x.code === "BIKE");
+      if (bike && sel) sel.value = String(bike.id);
+      await fetchCapacity();
+      await fetchProductionStats();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  document.getElementById("btnProduce")?.addEventListener("click", async () => {
+    const sel = document.getElementById("selectProduct");
+    const inp = document.getElementById("inputProduceQty");
+    const id = Number(sel?.value);
+    const qty = Math.floor(Number(inp?.value));
+    if (!id) {
+      toast("Выберите изделие.");
+      return;
+    }
+    if (!Number.isFinite(qty) || qty < 1) {
+      toast("Укажите целое количество ≥ 1.");
+      return;
+    }
+    try {
+      await api("/api/Production/produce", {
+        method: "POST",
+        body: JSON.stringify({ productItemId: id, quantity: qty }),
+      });
+      toast(`Выпущено ${qty} шт.`, true);
+      await loadAll();
+      await fetchCapacity();
+      await fetchProductionStats();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
   document.getElementById("btnRefresh").addEventListener("click", async () => {
     try {
       await loadAll();

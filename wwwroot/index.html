@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>MRP система модели «Велосипед»</title>
-  <link rel="stylesheet" href="css/app.css?v=5" />
+  <link rel="stylesheet" href="css/app.css?v=8" />
 </head>
 <body>
   <div class="container">
@@ -22,6 +22,7 @@
       <button class="tab" data-view="boms" type="button">Спецификация</button>
       <button class="tab" data-view="stock" type="button">Склад</button>
       <button class="tab" data-view="balances" type="button">Остатки</button>
+      <button class="tab" data-view="production" type="button">Производство</button>
     </div>
 
     <div id="toastHost" class="toast-host"></div>
@@ -93,7 +94,7 @@
     </section>
 
     <section id="view-balances" class="view">
-      <p class="section-hint">Итог = приход − расход + корректировка.</p>
+      <p class="section-hint">Итог = приход − расход + корректировка (по компоненту в строке BOM).</p>
       <div class="table-wrap">
       <table class="table table--nums" id="tableBalances">
         <thead>
@@ -112,6 +113,25 @@
       </table>
       </div>
     </section>
+
+    <section id="view-production" class="view">
+      <div class="production-panel">
+        <div class="production-row">
+          <button class="btn" id="btnReceiptMaterials" type="button">Приход материалов на 10 велосипедов</button>
+        </div>
+        <div class="form-row production-select">
+          <label for="selectProduct">Готовая продукция</label>
+          <select id="selectProduct"></select>
+        </div>
+        <div id="productionStats" class="production-stats-wrap"></div>
+        <div id="capacityInfo" class="capacity-info"></div>
+        <div class="production-row production-actions">
+          <label class="production-qty-label" for="inputProduceQty">Количество, шт.</label>
+          <input id="inputProduceQty" type="number" min="1" step="1" value="1" />
+          <button class="btn btn--primary" id="btnProduce" type="button">Произвести</button>
+        </div>
+      </div>
+    </section>
   </div>
 
   <div class="modal" id="modal" hidden>
@@ -125,6 +145,6 @@
     </div>
   </div>
 
-  <script src="js/app.js?v=4"></script>
+  <script src="js/app.js?v=8"></script>
 </body>
 </html>

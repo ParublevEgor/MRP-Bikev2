@@ -30,7 +30,8 @@ public class ItemsController : ControllerBase
                 ItemName = i.ItemName,
                 ItemType = i.ItemType.ToString(),
                 Unit = i.Unit,
-                UnitCost = i.UnitCost
+                UnitCost = i.UnitCost,
+                SellingPrice = i.SellingPrice
             })
             .ToListAsync();
 
@@ -49,7 +50,8 @@ public class ItemsController : ControllerBase
                 ItemName = i.ItemName,
                 ItemType = i.ItemType.ToString(),
                 Unit = i.Unit,
-                UnitCost = i.UnitCost
+                UnitCost = i.UnitCost,
+                SellingPrice = i.SellingPrice
             })
             .FirstOrDefaultAsync();
 
@@ -128,7 +130,8 @@ public class ItemsController : ControllerBase
             ItemName = dto.ItemName,
             ItemType = itemType,
             Unit = string.IsNullOrWhiteSpace(dto.Unit) ? null : dto.Unit.Trim(),
-            UnitCost = dto.UnitCost
+            UnitCost = dto.UnitCost,
+            SellingPrice = dto.SellingPrice
         };
 
         _context.Items.Add(item);
@@ -163,6 +166,7 @@ public class ItemsController : ControllerBase
         item.ItemType = itemType;
         item.Unit = string.IsNullOrWhiteSpace(dto.Unit) ? null : dto.Unit.Trim();
         item.UnitCost = dto.UnitCost;
+        item.SellingPrice = dto.SellingPrice;
 
         await _context.SaveChangesAsync();
 
@@ -210,6 +214,7 @@ public class ItemsController : ControllerBase
         ItemName = i.ItemName,
         ItemType = i.ItemType.ToString(),
         Unit = i.Unit,
-        UnitCost = i.UnitCost
+        UnitCost = i.UnitCost,
+        SellingPrice = i.SellingPrice
     };
 }

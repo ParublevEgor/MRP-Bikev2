@@ -19,6 +19,9 @@ public class ItemDto
     [JsonPropertyName("unitCost")]
     public decimal? UnitCost { get; set; }
 
+    [JsonPropertyName("sellingPrice")]
+    public decimal? SellingPrice { get; set; }
+
     [JsonPropertyName("unit")]
     public string? Unit { get; set; }
 }

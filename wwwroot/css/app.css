@@ -140,3 +140,56 @@ h1 { margin: 0 0 6px; font-size: 1.35rem; font-weight: 700; }
 .empty { color: #64748b; padding: 14px; }
 .mono { font-family: Consolas, monospace; }
 .link { color: #2563eb; text-decoration: none; }
+.production-panel {
+  display: grid;
+  gap: 12px;
+  max-width: 720px;
+}
+.production-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.production-select select {
+  width: 100%;
+  max-width: 520px;
+}
+.production-actions {
+  align-items: center;
+}
+.production-actions input[type="number"] {
+  width: 100px;
+  border: 1px solid #cfd8e3;
+  border-radius: 8px;
+  padding: 8px;
+}
+.production-qty-label {
+  font-size: 14px;
+  color: #334155;
+}
+.production-stats-wrap {
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 14px;
+}
+.production-stats p {
+  margin: 6px 0;
+}
+.capacity-info { margin-top: 4px; }
+#capacityInfo .table th,
+#capacityInfo .table td {
+  text-align: center;
+}
+.capacity-max {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+.capacity-err { color: #991b1b; }
+.table--compact th,
+.table--compact td {
+  padding: 6px 8px;
+  font-size: 13px;
+}

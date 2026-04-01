@@ -21,5 +21,8 @@ public class Item
 
     public decimal? UnitCost { get; set; }
 
+    /// <summary>Отпускная цена (для готовой продукции); для расчёта выручки и прибыли.</summary>
+    public decimal? SellingPrice { get; set; }
+
     public string? Unit { get; set; }
 }

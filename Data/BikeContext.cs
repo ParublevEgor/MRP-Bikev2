@@ -23,6 +23,10 @@ public class BikeContext : DbContext
             .HasPrecision(18, 2);
 
         modelBuilder.Entity<Item>()
+            .Property(i => i.SellingPrice)
+            .HasPrecision(18, 2);
+
+        modelBuilder.Entity<Item>()
             .HasIndex(i => i.ItemCode)
             .IsUnique()
             .HasFilter("[ItemCode] IS NOT NULL");
