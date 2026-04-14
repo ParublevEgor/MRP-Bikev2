@@ -31,8 +31,6 @@ public class BikeContext : DbContext
             .IsUnique()
             .HasFilter("[ItemCode] IS NOT NULL");
 
-        // Два FK из Bom в Item: в SQL Server нельзя включить ON DELETE CASCADE на оба без конфликта путей.
-        // ClientCascade — каскад на стороне EF при удалении Item (строки BOM и связанный склад удаляются порядком SaveChanges).
         modelBuilder.Entity<Bom>()
             .HasOne(b => b.ParentItem)
             .WithMany()

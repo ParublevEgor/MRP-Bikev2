@@ -10,8 +10,6 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
     ContentRootPath = contentRoot
 });
 
-// При запуске exe напрямую launchSettings не применяется.
-// Фиксируем порт 5249 как fallback, чтобы UI открывался по ожидаемому адресу.
 if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URLS")))
 {
     builder.WebHost.UseUrls("http://localhost:5249");
@@ -42,7 +40,6 @@ if (app.Environment.IsDevelopment())
 
 app.UseRouting();
 
-// Swagger до статики, чтобы /swagger и /swagger/v1/swagger.json не перехватывались файлами из wwwroot
 app.UseSwagger();
 app.UseSwaggerUI(options =>
 {
@@ -61,7 +58,6 @@ app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
 
 app.MapControllers();
 
-// Без явного маршрута GET / часто не доходит до UseDefaultFiles из‑за endpoint routing.
 app.MapGet("/", () => Results.Redirect("/index.html"));
 
 app.Run();

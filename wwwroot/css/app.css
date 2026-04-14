@@ -68,7 +68,7 @@ h1 { margin: 0 0 6px; font-size: 1.35rem; font-weight: 700; }
 .table th, .table td {
   border-bottom: 1px solid #e5eaf0;
   padding: 8px;
-  text-align: left;
+  text-align: center;
 }
 .table th { background: #f3f6fa; font-size: 13px; font-weight: 600; }
 .table td:last-child { white-space: nowrap; }
@@ -79,7 +79,7 @@ h1 { margin: 0 0 6px; font-size: 1.35rem; font-weight: 700; }
   border-radius: 8px;
 }
 .table--nums .num {
-  text-align: right;
+  text-align: center;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }

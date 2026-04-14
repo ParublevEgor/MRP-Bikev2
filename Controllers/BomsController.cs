@@ -92,6 +92,25 @@ public class BomsController : ControllerBase
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
     {
+        var bom = await _context.Boms
+            .AsNoTracking()
+            .FirstOrDefaultAsync(b => b.BOMID == id);
+        if (bom == null) return NotFound();
+
+        var stock = await _context.StockOperations
+            .Where(s => s.SpecificationId == id)
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                ReceiptQty = g.Where(x => x.OperationType == StockOperationType.Receipt).Sum(x => (decimal?)x.Quantity) ?? 0m,
+                IssueQty = g.Where(x => x.OperationType == StockOperationType.Issue).Sum(x => (decimal?)x.Quantity) ?? 0m
+            })
+            .FirstOrDefaultAsync();
+
+        var currentStock = stock == null ? 0m : stock.ReceiptQty - stock.IssueQty;
+        if (currentStock > 0)
+            return BadRequest("Нельзя удалить ветку BOM: по компоненту есть остатки.");
+
         await _context.StockOperations
             .Where(s => s.SpecificationId == id)
             .ExecuteDeleteAsync();
@@ -107,6 +126,8 @@ public class BomsController : ControllerBase
 
         if (dto.Quantity <= 0)
             return "Количество должно быть больше нуля.";
+        if (dto.Quantity != decimal.Truncate(dto.Quantity))
+            return "Количество должно быть целым числом.";
 
         var parentOk = await _context.Items.AnyAsync(i => i.ItemID == dto.ParentItemID);
         var childOk = await _context.Items.AnyAsync(i => i.ItemID == dto.ChildItemID);

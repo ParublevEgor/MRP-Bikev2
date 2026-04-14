@@ -102,6 +102,8 @@ public class ProductionController : ControllerBase
     public async Task<IActionResult> ReceiptMaterials([FromBody] ReceiptMaterialsRequestDto? dto)
     {
         dto ??= new ReceiptMaterialsRequestDto();
+        if (dto.BikeCount <= 0)
+            return BadRequest("Количество должно быть целым числом больше нуля.");
         var bikeCount = dto.BikeCount < 1 ? 10 : dto.BikeCount;
 
         int productId;
@@ -194,7 +196,6 @@ public class ProductionController : ControllerBase
         return Ok(new { ok = true, produced = dto.Quantity, productItemId = dto.ProductItemId });
     }
 
-    /// <summary>Единый каталог велосипеда (код BIKE): создаётся один раз при отсутствии.</summary>
     private async Task<int> EnsureStandardBikeCatalogAsync()
     {
         var existing = await _context.Items.AsNoTracking().FirstOrDefaultAsync(i => i.ItemCode == BikeCode);
@@ -433,14 +434,13 @@ public class ProductionController : ControllerBase
             {
                 ItemId = g.Key,
                 ReceiptQty = g.Where(x => x.OperationType == StockOperationType.Receipt).Sum(x => (decimal?)x.Quantity) ?? 0m,
-                IssueQty = g.Where(x => x.OperationType == StockOperationType.Issue).Sum(x => (decimal?)x.Quantity) ?? 0m,
-                AdjustmentQty = g.Where(x => x.OperationType == StockOperationType.Adjustment).Sum(x => (decimal?)x.Quantity) ?? 0m
+                IssueQty = g.Where(x => x.OperationType == StockOperationType.Issue).Sum(x => (decimal?)x.Quantity) ?? 0m
             })
             .ToListAsync();
 
         return raw.ToDictionary(
             x => x.ItemId,
-            x => x.ReceiptQty - x.IssueQty + x.AdjustmentQty);
+            x => x.ReceiptQty - x.IssueQty);
     }
 
     private async Task<Item> EnsureSysReleaseItemAsync()

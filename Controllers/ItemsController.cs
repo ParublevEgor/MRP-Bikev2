@@ -22,40 +22,21 @@ public class ItemsController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<IEnumerable<ItemDto>>> Get()
     {
+        var computedCosts = await BuildComputedItemCostsAsync();
         var items = await _context.Items
-            .Select(i => new ItemDto
-            {
-                ItemID = i.ItemID,
-                ItemCode = i.ItemCode,
-                ItemName = i.ItemName,
-                ItemType = i.ItemType.ToString(),
-                Unit = i.Unit,
-                UnitCost = i.UnitCost,
-                SellingPrice = i.SellingPrice
-            })
+            .OrderBy(i => i.ItemID)
             .ToListAsync();
 
-        return Ok(items);
+        return Ok(items.Select(i => ToDto(i, computedCosts.GetValueOrDefault(i.ItemID))));
     }
 
     [HttpGet("{id:int}")]
     public async Task<ActionResult<ItemDto>> GetById(int id)
     {
-        var dto = await _context.Items
-            .Where(i => i.ItemID == id)
-            .Select(i => new ItemDto
-            {
-                ItemID = i.ItemID,
-                ItemCode = i.ItemCode,
-                ItemName = i.ItemName,
-                ItemType = i.ItemType.ToString(),
-                Unit = i.Unit,
-                UnitCost = i.UnitCost,
-                SellingPrice = i.SellingPrice
-            })
-            .FirstOrDefaultAsync();
-
-        return dto == null ? NotFound() : Ok(dto);
+        var item = await _context.Items.FirstOrDefaultAsync(i => i.ItemID == id);
+        if (item == null) return NotFound();
+        var computedCosts = await BuildComputedItemCostsAsync();
+        return Ok(ToDto(item, computedCosts.GetValueOrDefault(item.ItemID)));
     }
 
     [HttpGet("stock-balance")]
@@ -72,14 +53,13 @@ public class ItemsController : ControllerBase
             {
                 ItemId = g.Key,
                 ReceiptQty = g.Where(x => x.OperationType == StockOperationType.Receipt).Sum(x => (decimal?)x.Quantity) ?? 0m,
-                IssueQty = g.Where(x => x.OperationType == StockOperationType.Issue).Sum(x => (decimal?)x.Quantity) ?? 0m,
-                AdjustmentQty = g.Where(x => x.OperationType == StockOperationType.Adjustment).Sum(x => (decimal?)x.Quantity) ?? 0m
+                IssueQty = g.Where(x => x.OperationType == StockOperationType.Issue).Sum(x => (decimal?)x.Quantity) ?? 0m
             })
             .ToListAsync();
 
         var byItem = raw.ToDictionary(
             x => x.ItemId,
-            x => new { x.ReceiptQty, x.IssueQty, x.AdjustmentQty });
+            x => new { x.ReceiptQty, x.IssueQty });
 
         var result = await _context.Items
             .OrderBy(i => i.ItemID)
@@ -99,8 +79,8 @@ public class ItemsController : ControllerBase
 
             item.ReceiptQty = agg.ReceiptQty;
             item.IssueQty = agg.IssueQty;
-            item.AdjustmentQty = agg.AdjustmentQty;
-            item.CurrentStock = agg.ReceiptQty - agg.IssueQty + agg.AdjustmentQty;
+            item.AdjustmentQty = 0;
+            item.CurrentStock = agg.ReceiptQty - agg.IssueQty;
         }
 
         return Ok(result);
@@ -176,6 +156,28 @@ public class ItemsController : ControllerBase
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
     {
+        var itemExists = await _context.Items.AnyAsync(i => i.ItemID == id);
+        if (!itemExists) return NotFound();
+
+        var stockByChild = await _context.StockOperations
+            .Join(
+                _context.Boms,
+                s => s.SpecificationId,
+                b => b.BOMID,
+                (s, b) => new { b.ChildItemID, s.OperationType, s.Quantity })
+            .Where(x => x.ChildItemID == id)
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                ReceiptQty = g.Where(x => x.OperationType == StockOperationType.Receipt).Sum(x => (decimal?)x.Quantity) ?? 0m,
+                IssueQty = g.Where(x => x.OperationType == StockOperationType.Issue).Sum(x => (decimal?)x.Quantity) ?? 0m
+            })
+            .FirstOrDefaultAsync();
+
+        var currentStock = stockByChild == null ? 0m : stockByChild.ReceiptQty - stockByChild.IssueQty;
+        if (currentStock > 0)
+            return BadRequest("Нельзя удалить позицию: по ней есть положительные остатки.");
+
         var bomIds = await _context.Boms
             .AsNoTracking()
             .Where(b => b.ParentItemID == id || b.ChildItemID == id)
@@ -204,17 +206,80 @@ public class ItemsController : ControllerBase
             return "Наименование не длиннее 100 символов.";
         if (!string.IsNullOrEmpty(dto.ItemCode) && dto.ItemCode.Length > 20)
             return "Код не длиннее 20 символов.";
+        if (!string.IsNullOrWhiteSpace(dto.Unit) && dto.Unit.Any(char.IsDigit))
+            return "Единица измерения должна быть строкой, без цифр.";
+        if (dto.UnitCost is { } unitCost && unitCost != decimal.Truncate(unitCost))
+            return "Себестоимость должна быть целым числом.";
+        if (dto.SellingPrice is { } sellingPrice && sellingPrice != decimal.Truncate(sellingPrice))
+            return "Отпускная цена должна быть целым числом.";
         return null;
     }
 
-    private static ItemDto ToDto(Item i) => new()
+    private async Task<Dictionary<int, decimal?>> BuildComputedItemCostsAsync()
+    {
+        var items = await _context.Items.AsNoTracking().ToListAsync();
+        var boms = await _context.Boms.AsNoTracking().ToListAsync();
+        var itemsById = items.ToDictionary(x => x.ItemID);
+        var childrenByParent = boms
+            .GroupBy(x => x.ParentItemID)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var memo = new Dictionary<int, decimal?>();
+        var visiting = new HashSet<int>();
+
+        decimal? ComputeCost(int itemId)
+        {
+            if (memo.TryGetValue(itemId, out var cached))
+                return cached;
+            if (!itemsById.TryGetValue(itemId, out var item))
+                return null;
+            if (!visiting.Add(itemId))
+                return item.UnitCost;
+
+            try
+            {
+                if (!childrenByParent.TryGetValue(itemId, out var lines) || lines.Count == 0)
+                {
+                    memo[itemId] = item.UnitCost;
+                    return item.UnitCost;
+                }
+
+                decimal total = 0;
+                foreach (var line in lines)
+                {
+                    var childCost = ComputeCost(line.ChildItemID);
+                    if (childCost == null)
+                    {
+                        memo[itemId] = item.UnitCost;
+                        return item.UnitCost;
+                    }
+                    total += line.Quantity * childCost.Value;
+                }
+
+                var computed = decimal.Round(total, 2, MidpointRounding.AwayFromZero);
+                memo[itemId] = computed;
+                return computed;
+            }
+            finally
+            {
+                visiting.Remove(itemId);
+            }
+        }
+
+        foreach (var item in items)
+            ComputeCost(item.ItemID);
+
+        return memo;
+    }
+
+    private static ItemDto ToDto(Item i, decimal? computedUnitCost = null) => new()
     {
         ItemID = i.ItemID,
         ItemCode = i.ItemCode,
         ItemName = i.ItemName,
         ItemType = i.ItemType.ToString(),
         Unit = i.Unit,
-        UnitCost = i.UnitCost,
+        UnitCost = computedUnitCost ?? i.UnitCost,
         SellingPrice = i.SellingPrice
     };
 }

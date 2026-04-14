@@ -1,5 +1,5 @@
 (() => {
-  const state = { items: [], boms: [], stock: [], balances: [] };
+  const state = { items: [], boms: [], stock: [], balances: [], undo: null, stockOpSortAsc: true, orders: [] };
 
   const ITEM_TYPE_RU = {
     Product: "Готовая продукция",
@@ -11,7 +11,6 @@
   const OP_TYPE_RU = {
     Receipt: "Приход",
     Issue: "Расход",
-    Adjustment: "Корректировка",
   };
 
   const pick = (obj, keys, fallback = null) => {
@@ -59,11 +58,11 @@
     unit: pick(x, ["unit", "Unit"], ""),
     receiptQty: Number(pick(x, ["receiptQty", "ReceiptQty"], 0)),
     issueQty: Number(pick(x, ["issueQty", "IssueQty"], 0)),
-    adjustmentQty: Number(pick(x, ["adjustmentQty", "AdjustmentQty"], 0)),
     currentStock: Number(pick(x, ["currentStock", "CurrentStock"], 0)),
   });
 
-  /** Защита от «тихого» 0, если ключ JSON не совпал с ожидаемым. */
+  const isIntegerLike = (v) => Number.isInteger(Number(v));
+
   function NonZeroId(raw, what) {
     const n = Number(raw);
     if (!Number.isFinite(n) || n <= 0) {
@@ -75,15 +74,19 @@
   function itemLabel(id) {
     const it = state.items.find((x) => x.id === id);
     if (!it) return `ID ${id}`;
-    return `${it.id} — ${it.name}${it.code ? ` (${it.code})` : ""}`;
+    return `${it.id} - ${it.name}${it.code ? ` (${it.code})` : ""}`;
+  }
+
+  function itemNameById(id) {
+    return state.items.find((x) => x.id === id)?.name || `ID ${id}`;
   }
 
   function typeRu(en) {
-    return ITEM_TYPE_RU[en] || en || "—";
+    return ITEM_TYPE_RU[en] || en || "-";
   }
 
   function opRu(en) {
-    return OP_TYPE_RU[en] || en || "—";
+    return OP_TYPE_RU[en] || en || "-";
   }
 
   function itemTypeOptionsHtml(selected) {
@@ -97,7 +100,7 @@
   }
 
   function opTypeOptionsHtml(selected) {
-    const keys = ["Receipt", "Issue", "Adjustment"];
+    const keys = ["Receipt", "Issue"];
     return keys
       .map(
         (k) =>
@@ -155,20 +158,103 @@
   }
 
   function toMoney(v) {
-    if (v == null || Number.isNaN(Number(v))) return "—";
+    if (v == null || Number.isNaN(Number(v))) return "-";
     return `${Number(v).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
   }
 
   function toQty(v) {
-    if (v == null || Number.isNaN(Number(v))) return "—";
+    if (v == null || Number.isNaN(Number(v))) return "-";
     return Number(v).toLocaleString("ru-RU", { maximumFractionDigits: 4 });
   }
 
-  /** Краткая подпись строки BOM для таблицы склада. */
   function bomLineLabel(bomId) {
     const b = state.boms.find((x) => x.id === bomId);
-    if (!b) return `#${bomId}`;
-    return `#${b.id}: ${itemLabel(b.parentItemId)} → ${itemLabel(b.childItemId)}`;
+    if (!b) return "-";
+    return itemNameById(b.childItemId);
+  }
+
+  function bomOptionLabel(bomId) {
+    const b = state.boms.find((x) => x.id === bomId);
+    if (!b) return `BOM ${bomId}`;
+    return `BOM ${b.id}: ${itemNameById(b.parentItemId)} / ${itemNameById(b.childItemId)}`;
+  }
+
+  function applyIntegerValidation(host = document) {
+    host.querySelectorAll('input[type="number"][step="1"]').forEach((input) => {
+      input.addEventListener("input", () => input.setCustomValidity(""));
+      input.addEventListener("invalid", () => input.setCustomValidity("Введите целое число"));
+    });
+  }
+
+  function setUndoAction(label, run) {
+    state.undo = { label, run };
+    const btn = document.getElementById("btnUndo");
+    if (!btn) return;
+    btn.disabled = false;
+    btn.title = label;
+  }
+
+  function clearUndoAction() {
+    state.undo = null;
+    const btn = document.getElementById("btnUndo");
+    if (!btn) return;
+    btn.disabled = true;
+    btn.title = "";
+  }
+
+  function loadOrders() {
+    try {
+      const raw = localStorage.getItem("mrpOrdersV1");
+      const parsed = raw ? JSON.parse(raw) : [];
+      state.orders = Array.isArray(parsed)
+        ? parsed.map((x) => {
+            if (Array.isArray(x.items)) return x;
+            if (x?.itemId) {
+              return {
+                ...x,
+                items: [{ itemId: Number(x.itemId), quantity: Number(x.quantity) || 1 }],
+              };
+            }
+            return x;
+          })
+        : [];
+      if (!Array.isArray(state.orders)) state.orders = [];
+    } catch {
+      state.orders = [];
+    }
+  }
+
+  function saveOrders() {
+    localStorage.setItem("mrpOrdersV1", JSON.stringify(state.orders));
+  }
+
+  function stockDateRu(value) {
+    if (!value) return "-";
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return "-";
+    return d.toLocaleString("ru-RU", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  function isStockLocked(row) {
+    if (!row || row.operationType !== "Receipt") return false;
+    const thisBom = state.boms.find((b) => b.id === row.specificationId);
+    if (!thisBom) return false;
+    const receiptDate = new Date(row.date).getTime();
+    if (!Number.isFinite(receiptDate)) return false;
+
+    return state.stock.some((s) => {
+      if (s.id === row.id || s.operationType !== "Issue") return false;
+      const issueBom = state.boms.find((b) => b.id === s.specificationId);
+      if (!issueBom || issueBom.childItemId !== thisBom.childItemId) return false;
+      const issueDate = new Date(s.date).getTime();
+      return Number.isFinite(issueDate) && issueDate >= receiptDate;
+    });
   }
 
   function setApiError(msg) {
@@ -192,20 +278,35 @@
       api("/api/Items/stock-balance").catch(() => []),
     ]);
 
-    if (!Array.isArray(itemsRaw)) throw new Error("Ответ /api/Items не массив — проверьте консоль сервера и /swagger/v1/swagger.json");
+    if (!Array.isArray(itemsRaw)) throw new Error("Ответ /api/Items не массив - проверьте консоль сервера и /swagger/v1/swagger.json");
     if (!Array.isArray(bomsRaw)) throw new Error("Ответ /api/Boms не массив.");
     if (!Array.isArray(stockRaw)) throw new Error("Ответ /api/StockOperations не массив.");
     if (!Array.isArray(balancesRaw)) throw new Error("Ответ /api/Items/stock-balance не массив.");
 
-    state.items = itemsRaw.map(normalizeItem);
-    state.boms = bomsRaw.map(normalizeBom);
-    state.stock = stockRaw.map(normalizeStock);
-    state.balances = balancesRaw.map(normalizeBalance);
+    state.items = itemsRaw.map(normalizeItem).filter((x) => x.code !== "SYS-GP");
+    state.boms = bomsRaw.map(normalizeBom).filter((b) => {
+      const parentRaw = itemsRaw.find((i) => Number(pick(i, ["itemId", "itemID", "ItemID"], 0)) === b.parentItemId);
+      return String(pick(parentRaw, ["itemCode", "ItemCode"], "")) !== "SYS-GP";
+    });
+    const visibleBomIds = new Set(state.boms.map((b) => b.id));
+    state.stock = stockRaw
+      .map(normalizeStock)
+      .filter((s) => visibleBomIds.has(s.specificationId))
+      .sort((a, b) => {
+      const ap = a.operationType === "Receipt" ? 0 : 1;
+      const bp = b.operationType === "Receipt" ? 0 : 1;
+      if (ap !== bp) return ap - bp;
+      return new Date(b.date).getTime() - new Date(a.date).getTime();
+    });
+    state.balances = balancesRaw.map(normalizeBalance).filter((x) => x.itemCode !== "SYS-GP");
+    rebuildDisplayBalances();
+    loadOrders();
 
     renderItems();
     renderBoms();
     renderStock();
     renderBalances();
+    renderOrders();
     populateProductSelect();
     if (document.getElementById("view-production")?.classList.contains("view--active")) {
       fetchCapacity();
@@ -219,7 +320,7 @@
     const products = state.items.filter((x) => x.type === "Product");
     const prev = sel.value;
     if (!products.length) {
-      sel.innerHTML = '<option value="">— нет готовой продукции —</option>';
+      sel.innerHTML = '<option value="">- нет готовой продукции -</option>';
       return;
     }
     sel.innerHTML = products.map((p) => `<option value="${p.id}">${esc(itemLabel(p.id))}</option>`).join("");
@@ -228,6 +329,55 @@
     if (still) sel.value = prev;
     else if (bike && products.some((p) => p.id === bike.id)) sel.value = String(bike.id);
     else sel.value = String(products[0].id);
+  }
+
+  function rebuildDisplayBalances() {
+    const baseByItem = new Map(state.balances.map((x) => [x.itemId, x]));
+    const childrenByParent = new Map();
+    for (const b of state.boms) {
+      if (!childrenByParent.has(b.parentItemId)) childrenByParent.set(b.parentItemId, []);
+      childrenByParent.get(b.parentItemId).push(b);
+    }
+
+    const memo = new Map();
+    const stack = new Set();
+
+    function available(itemId) {
+      if (memo.has(itemId)) return memo.get(itemId);
+      if (stack.has(itemId)) return 0;
+      stack.add(itemId);
+      const direct = Number(baseByItem.get(itemId)?.currentStock ?? 0);
+      const children = childrenByParent.get(itemId) || [];
+      if (!children.length) {
+        memo.set(itemId, direct);
+        stack.delete(itemId);
+        return direct;
+      }
+      let derived = Number.POSITIVE_INFINITY;
+      for (const line of children) {
+        const childAvail = Math.max(0, Number(available(line.childItemId)));
+        const fromLine = line.quantity > 0 ? Math.floor(childAvail / Number(line.quantity)) : 0;
+        derived = Math.min(derived, fromLine);
+      }
+      const calculated = Number.isFinite(derived) ? derived : 0;
+      const total = Math.max(direct, calculated);
+      memo.set(itemId, total);
+      stack.delete(itemId);
+      return total;
+    }
+
+    state.balances = state.items.map((it) => {
+      const raw = baseByItem.get(it.id);
+      return {
+        itemId: it.id,
+        itemCode: it.code || "",
+        itemName: it.name,
+        unit: it.unit || "",
+        receiptQty: Number(raw?.receiptQty ?? 0),
+        issueQty: Number(raw?.issueQty ?? 0),
+        currentStock: Number(available(it.id)),
+      };
+    });
   }
 
   function renderCapacityHtml(c) {
@@ -243,7 +393,7 @@
     const rows = lines.length
       ? lines
           .map((l) => {
-            const name = pick(l, ["childName", "ChildName"], "—");
+            const name = pick(l, ["childName", "ChildName"], "-");
             const per = pick(l, ["qtyPerUnit", "QtyPerUnit"], 0);
             const stock = pick(l, ["currentStock", "CurrentStock"], 0);
             const m = pick(l, ["maxFromThisLine", "MaxFromThisLine"], 0);
@@ -286,14 +436,12 @@
     const tmc = pick(s, ["totalMaterialCost", "TotalMaterialCost"], 0);
     const tr = pick(s, ["totalRevenue", "TotalRevenue"], null);
     const tp = pick(s, ["totalProfit", "TotalProfit"], null);
-    const sp = pick(s, ["sellingPrice", "SellingPrice"], null);
     return `<div class="production-stats">
       <p><strong>Выпущено, шт.:</strong> ${toQty(pq)}</p>
       <p><strong>Себестоимость материалов на 1 шт.:</strong> ${toMoney(cpb)}</p>
       <p><strong>Себестоимость выпуска (оценка):</strong> ${toMoney(tmc)}</p>
-      <p><strong>Отпускная цена:</strong> ${sp != null && sp !== "" ? toMoney(sp) : "— (в номенклатуре)"}</p>
-      <p><strong>Выручка:</strong> ${tr != null && tr !== "" ? toMoney(tr) : "—"}</p>
-      <p><strong>Прибыль:</strong> ${tp != null && tp !== "" ? toMoney(tp) : "—"}</p>
+      <p><strong>Выручка:</strong> ${tr != null && tr !== "" ? toMoney(tr) : "-"}</p>
+      <p><strong>Прибыль:</strong> ${tp != null && tp !== "" ? toMoney(tp) : "-"}</p>
     </div>`;
   }
 
@@ -319,18 +467,18 @@
     tb.innerHTML = "";
     if (!state.items.length) {
       tb.innerHTML =
-        '<tr><td colspan="7"><div class="empty">Нет позиций — добавьте первую или проверьте SQL Server.</div></td></tr>';
+        '<tr><td colspan="7"><div class="empty">Нет позиций - добавьте первую или проверьте SQL Server.</div></td></tr>';
       return;
     }
 
-    for (const x of state.items) {
+    for (const [idx, x] of state.items.entries()) {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${x.id}</td>
-        <td class="mono">${esc(x.code || "—")}</td>
+        <td>${idx + 1}</td>
+        <td class="mono">${esc(x.code || "-")}</td>
         <td>${esc(x.name)}</td>
         <td>${esc(typeRu(x.type))}</td>
-        <td>${esc(x.unit || "—")}</td>
+        <td>${esc(x.unit || "-")}</td>
         <td>${toMoney(x.unitCost)}</td>
         <td>
           <button class="btn btn--small" data-edit-item="${x.id}" type="button">Изменить</button>
@@ -355,12 +503,12 @@
       return;
     }
 
-    for (const x of state.boms) {
+    for (const [idx, x] of state.boms.entries()) {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${x.id}</td>
-        <td>${esc(itemLabel(x.parentItemId))}</td>
-        <td>${esc(itemLabel(x.childItemId))}</td>
+        <td>${idx + 1}</td>
+        <td>${esc(itemNameById(x.parentItemId))}</td>
+        <td>${esc(itemNameById(x.childItemId))}</td>
         <td>${x.quantity}</td>
         <td>
           <button class="btn btn--small" data-edit-bom="${x.id}" type="button">Изменить</button>
@@ -382,21 +530,29 @@
     tb.innerHTML = "";
     if (!state.stock.length) {
       tb.innerHTML =
-        '<tr><td colspan="6"><div class="empty">Нет операций — нужна хотя бы одна строка BOM.</div></td></tr>';
+        '<tr><td colspan="6"><div class="empty">Нет операций - нужна хотя бы одна строка BOM.</div></td></tr>';
       return;
     }
 
-    for (const x of state.stock) {
+    const sorted = [...state.stock].sort((a, b) => {
+      const aw = a.operationType === "Receipt" ? 0 : 1;
+      const bw = b.operationType === "Receipt" ? 0 : 1;
+      if (aw !== bw) return state.stockOpSortAsc ? aw - bw : bw - aw;
+      return new Date(b.date).getTime() - new Date(a.date).getTime();
+    });
+
+    for (const x of sorted) {
+      const locked = isStockLocked(x);
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${x.id}</td>
         <td>${esc(bomLineLabel(x.specificationId))}</td>
-        <td>${x.date ? new Date(x.date).toLocaleString("ru-RU") : "—"}</td>
+        <td>${stockDateRu(x.date)}</td>
         <td>${x.quantity}</td>
         <td>${esc(opRu(x.operationType))}</td>
         <td>
-          <button class="btn btn--small" data-edit-stock="${x.id}" type="button">Изменить</button>
-          <button class="btn btn--small btn--danger" data-del-stock="${x.id}" type="button">Удалить</button>
+          <button class="btn btn--small" data-edit-stock="${x.id}" type="button" ${locked ? "disabled title='Зафиксировано расходом'" : ""}>Изменить</button>
+          <button class="btn btn--small btn--danger" data-del-stock="${x.id}" type="button" ${locked ? "disabled title='Зафиксировано расходом'" : ""}>Удалить</button>
         </td>`;
       tb.appendChild(tr);
     }
@@ -414,22 +570,89 @@
     if (!tb) return;
     tb.innerHTML = "";
     if (!state.balances.length) {
-      tb.innerHTML = '<tr><td colspan="8"><div class="empty">Нет данных об остатках.</div></td></tr>';
+      tb.innerHTML = '<tr><td colspan="7"><div class="empty">Нет данных об остатках.</div></td></tr>';
       return;
     }
 
-    for (const x of state.balances) {
+    for (const [idx, x] of state.balances.entries()) {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${x.itemId}</td>
-        <td class="mono">${esc(x.itemCode || "—")}</td>
+        <td>${idx + 1}</td>
+        <td class="mono">${esc(x.itemCode || "-")}</td>
         <td>${esc(x.itemName)}</td>
-        <td>${esc(x.unit || "—")}</td>
+        <td>${esc(x.unit || "-")}</td>
         <td class="num">${toQty(x.receiptQty)}</td>
         <td class="num">${toQty(x.issueQty)}</td>
-        <td class="num">${toQty(x.adjustmentQty)}</td>
         <td class="num num--total">${toQty(x.currentStock)}</td>`;
       tb.appendChild(tr);
+    }
+  }
+
+  function orderTypeRu(v) {
+    return v === "closed" ? "Закрытый" : "Открытый";
+  }
+
+  function orderItemsText(order) {
+    const items = Array.isArray(order.items) ? order.items : [];
+    if (!items.length) return "-";
+    return items
+      .map((x) => `${Number(x.quantity)} ${itemNameById(Number(x.itemId))}`)
+      .join(", ");
+  }
+
+  function renderOrders() {
+    const tb = document.querySelector("#tableOrders tbody");
+    if (!tb) return;
+    tb.innerHTML = "";
+    const allowedNodeIds = new Set(
+      state.items.filter((x) => x.type !== "Material").map((x) => x.id),
+    );
+    const rows = state.orders.filter((o) => (o.items || []).every((x) => allowedNodeIds.has(Number(x.itemId))));
+    if (!rows.length) {
+      tb.innerHTML = '<tr><td colspan="7"><div class="empty">Нет заказов.</div></td></tr>';
+    } else {
+      rows.forEach((o, idx) => {
+        const isClosed = o.orderType === "closed";
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${idx + 1}</td>
+          <td>${esc(orderItemsText(o))}</td>
+          <td>${esc(stockDateRu(o.orderDate))}</td>
+          <td>${esc(stockDateRu(o.dueDate))}</td>
+          <td>${esc(orderTypeRu(o.orderType))}</td>
+          <td>
+            <button class="btn btn--small" data-edit-order="${idx}" type="button" ${isClosed ? "disabled" : ""}>Изменить</button>
+            <button class="btn btn--small" data-close-order="${idx}" type="button" ${isClosed ? "disabled" : ""}>Закрыть</button>
+            <button class="btn btn--small btn--danger" data-del-order="${idx}" type="button">Удалить</button>
+          </td>`;
+        tb.appendChild(tr);
+      });
+      tb.querySelectorAll("[data-edit-order]").forEach((b) =>
+        b.addEventListener("click", () => {
+          const idx = Number(b.dataset.editOrder);
+          if (state.orders[idx]?.orderType === "closed") return toast("Закрытый заказ изменять нельзя");
+          openOrderModal(idx);
+        }),
+      );
+      tb.querySelectorAll("[data-close-order]").forEach((b) =>
+        b.addEventListener("click", () => {
+          const idx = Number(b.dataset.closeOrder);
+          if (!state.orders[idx] || state.orders[idx].orderType === "closed") return;
+          state.orders[idx].orderType = "closed";
+          saveOrders();
+          renderOrders();
+          toast("Заказ закрыт", true);
+        }),
+      );
+      tb.querySelectorAll("[data-del-order]").forEach((b) =>
+        b.addEventListener("click", () => {
+          const idx = Number(b.dataset.delOrder);
+          state.orders.splice(idx, 1);
+          saveOrders();
+          renderOrders();
+          toast("Заказ удален", true);
+        }),
+      );
     }
   }
 
@@ -479,19 +702,13 @@
             <span class="input-suffix">₽</span>
           </div>
         </div>
-        <div class="form-row">
-          <label>Отпускная цена (для готовой продукции)</label>
-          <div class="input-with-suffix">
-            <input name="sellingPrice" type="number" step="1" min="0" value="${row?.sellingPrice ?? ""}" placeholder="необязательно" />
-            <span class="input-suffix">₽</span>
-          </div>
-        </div>
         <div class="form-actions">
           <button class="btn" type="button" data-close-modal>Отмена</button>
           <button class="btn btn--primary" type="submit">${edit ? "Сохранить" : "Создать"}</button>
         </div>
       </form>`,
     );
+    applyIntegerValidation(modalBody);
 
     document.getElementById("formItem").addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -503,12 +720,34 @@
         itemType: String(fd.get("itemType") || "Component"),
         unit: fd.get("unit") || null,
         unitCost: fd.get("unitCost") === "" ? null : Number(fd.get("unitCost")),
-        sellingPrice: fd.get("sellingPrice") === "" ? null : Number(fd.get("sellingPrice")),
+        sellingPrice: null,
       };
+      if (payload.unitCost != null && !isIntegerLike(payload.unitCost)) return toast("Себестоимость должна быть целым числом.");
+      if (payload.unit && /\d/.test(String(payload.unit))) return toast("Единица измерения должна быть строкой, без цифр.");
 
       try {
-        if (edit) await api(`/api/Items/${id}`, { method: "PUT", body: JSON.stringify(payload) });
-        else await api("/api/Items", { method: "POST", body: JSON.stringify(payload) });
+        const prev = row
+          ? {
+              itemId: row.id,
+              itemCode: row.code || null,
+              itemName: row.name,
+              itemType: row.type,
+              unit: row.unit || null,
+              unitCost: row.unitCost,
+              sellingPrice: row.sellingPrice,
+            }
+          : null;
+        if (edit) {
+          await api(`/api/Items/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+          setUndoAction("Отмена изменения номенклатуры", () =>
+            api(`/api/Items/${id}`, { method: "PUT", body: JSON.stringify(prev) }),
+          );
+        } else {
+          const created = await api("/api/Items", { method: "POST", body: JSON.stringify(payload) });
+          const createdId = Number(pick(created, ["itemId", "itemID", "ItemID"], 0));
+          if (createdId > 0)
+            setUndoAction("Отмена создания номенклатуры", () => api(`/api/Items/${createdId}`, { method: "DELETE" }));
+        }
         closeModal();
         toast(edit ? "Сохранено" : "Создано", true);
         await loadAll();
@@ -540,6 +779,7 @@
         </div>
       </form>`,
     );
+    applyIntegerValidation(modalBody);
 
     modalBody.querySelector('[name="parentItemId"]').value = String(p);
     modalBody.querySelector('[name="childItemId"]').value = String(c);
@@ -553,10 +793,26 @@
         childItemId: Number(fd.get("childItemId")),
         quantity: Number(fd.get("quantity")),
       };
+      if (!isIntegerLike(payload.quantity)) return toast("Количество в BOM должно быть целым числом.");
 
       try {
-        if (edit) await api(`/api/Boms/${id}`, { method: "PUT", body: JSON.stringify(payload) });
-        else await api("/api/Boms", { method: "POST", body: JSON.stringify(payload) });
+        const prev = row
+          ? {
+              bomId: row.id,
+              parentItemId: row.parentItemId,
+              childItemId: row.childItemId,
+              quantity: row.quantity,
+            }
+          : null;
+        if (edit) {
+          await api(`/api/Boms/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+          setUndoAction("Отмена изменения BOM", () => api(`/api/Boms/${id}`, { method: "PUT", body: JSON.stringify(prev) }));
+        } else {
+          const created = await api("/api/Boms", { method: "POST", body: JSON.stringify(payload) });
+          const createdId = Number(pick(created, ["bomId", "bomID", "BOMID", "BomId"], 0));
+          if (createdId > 0)
+            setUndoAction("Отмена создания BOM", () => api(`/api/Boms/${createdId}`, { method: "DELETE" }));
+        }
         closeModal();
         toast(edit ? "Сохранено" : "Создано", true);
         await loadAll();
@@ -585,7 +841,7 @@
 
     const bomOptions = state.boms
       .map((b) => {
-        const t = `#${b.id}: ${itemLabel(b.parentItemId)} → ${itemLabel(b.childItemId)}, кол-во ${b.quantity}`;
+        const t = bomOptionLabel(b.id);
         return `<option value="${b.id}" ${b.id === spec ? "selected" : ""}>${esc(t)}</option>`;
       })
       .join("");
@@ -593,7 +849,7 @@
     openModal(
       edit ? `Операция, ID ${id}` : "Новая операция",
       `<form id="formStock" class="form-grid">
-        <div class="form-row"><label>Строка BOM</label><select name="specificationId">${bomOptions}</select></div>
+        <div class="form-row"><label>BOM</label><select name="specificationId">${bomOptions}</select></div>
         <div class="form-row"><label>Дата и время</label><input name="date" type="datetime-local" value="${dateToLocalInput(row?.date)}" required /></div>
         <div class="form-row"><label>Количество</label><input name="quantity" type="number" step="1" min="1" value="${row?.quantity ?? 1}" required /></div>
         <div class="form-row"><label>Тип операции</label><select name="operationType">${opTypeOptionsHtml(row?.operationType || "Receipt")}</select></div>
@@ -603,6 +859,7 @@
         </div>
       </form>`,
     );
+    applyIntegerValidation(modalBody);
 
     document.getElementById("formStock").addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -614,10 +871,29 @@
         quantity: Number(fd.get("quantity")),
         operationType: String(fd.get("operationType")),
       };
+      if (!isIntegerLike(payload.quantity)) return toast("Количество операции должно быть целым числом.");
 
       try {
-        if (edit) await api(`/api/StockOperations/${id}`, { method: "PUT", body: JSON.stringify(payload) });
-        else await api("/api/StockOperations", { method: "POST", body: JSON.stringify(payload) });
+        const prev = row
+          ? {
+              stockOperationId: row.id,
+              specificationId: row.specificationId,
+              date: row.date,
+              quantity: row.quantity,
+              operationType: row.operationType,
+            }
+          : null;
+        if (edit) {
+          await api(`/api/StockOperations/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+          setUndoAction("Отмена изменения операции", () =>
+            api(`/api/StockOperations/${id}`, { method: "PUT", body: JSON.stringify(prev) }),
+          );
+        } else {
+          const created = await api("/api/StockOperations", { method: "POST", body: JSON.stringify(payload) });
+          const createdId = Number(pick(created, ["stockOperationId", "stockOperationID", "StockOperationID"], 0));
+          if (createdId > 0)
+            setUndoAction("Отмена создания операции", () => api(`/api/StockOperations/${createdId}`, { method: "DELETE" }));
+        }
         closeModal();
         toast(edit ? "Сохранено" : "Создано", true);
         await loadAll();
@@ -627,10 +903,114 @@
     });
   }
 
+  function openOrderModal(editIndex = null) {
+    const nodes = state.items.filter((x) => x.type !== "Material");
+    if (!nodes.length) {
+      toast("Нет узлов для заказа.");
+      return;
+    }
+    const editing = editIndex != null;
+    const current = editing ? state.orders[editIndex] : null;
+    if (editing && current?.orderType === "closed") {
+      toast("Закрытый заказ изменять нельзя");
+      return;
+    }
+    const now = dateToLocalInput(new Date().toISOString());
+    const options = nodes.map((n) => `<option value="${n.id}">${esc(n.name)}</option>`).join("");
+    openModal(
+      editing ? "Изменить заказ" : "Новый заказ",
+      `<form id="formOrder" class="form-grid">
+        <div id="orderItems"></div>
+        <div class="form-row"><button class="btn btn--small" type="button" id="btnAddOrderItem">Добавить изделие</button></div>
+        <div class="form-row"><label>Дата оформления</label><input name="orderDate" type="datetime-local" value="${editing ? dateToLocalInput(current?.orderDate) : now}" required /></div>
+        <div class="form-row"><label>Дата готовности</label><input name="dueDate" type="datetime-local" value="${editing ? dateToLocalInput(current?.dueDate) : now}" required /></div>
+        <div class="form-row"><label>Тип заказа</label>
+          <select name="orderType" ${editing && current?.orderType === "closed" ? "disabled" : ""}>
+            <option value="open" ${(current?.orderType || "open") === "open" ? "selected" : ""}>Открытый</option>
+            <option value="closed" ${current?.orderType === "closed" ? "selected" : ""}>Закрытый</option>
+          </select>
+        </div>
+        <div class="form-actions">
+          <button class="btn" type="button" data-close-modal>Отмена</button>
+          <button class="btn btn--primary" type="submit">Сохранить</button>
+        </div>
+      </form>`,
+    );
+    applyIntegerValidation(modalBody);
+    const itemsHost = document.getElementById("orderItems");
+    const initialItems = editing && Array.isArray(current?.items) && current.items.length
+      ? current.items
+      : [{ itemId: nodes[0].id, quantity: 1 }];
+    const drawOrderItems = () => {
+      itemsHost.innerHTML = initialItems
+        .map(
+          (x, idx) => `<div class="production-row" data-order-item="${idx}">
+            <select data-item-id="${idx}">${options}</select>
+            <input data-item-qty="${idx}" type="number" min="1" step="1" value="${Number(x.quantity) || 1}" />
+            <button class="btn btn--small btn--danger" type="button" data-remove-item="${idx}" ${initialItems.length === 1 ? "disabled" : ""}>Удалить</button>
+          </div>`,
+        )
+        .join("");
+      initialItems.forEach((x, idx) => {
+        const sel = itemsHost.querySelector(`[data-item-id="${idx}"]`);
+        if (sel) sel.value = String(x.itemId);
+      });
+      applyIntegerValidation(itemsHost);
+      itemsHost.querySelectorAll("[data-remove-item]").forEach((b) =>
+        b.addEventListener("click", () => {
+          const idx = Number(b.dataset.removeItem);
+          initialItems.splice(idx, 1);
+          drawOrderItems();
+        }),
+      );
+    };
+    drawOrderItems();
+    document.getElementById("btnAddOrderItem").addEventListener("click", () => {
+      initialItems.push({ itemId: nodes[0].id, quantity: 1 });
+      drawOrderItems();
+    });
+
+    document.getElementById("formOrder").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const items = initialItems.map((_, idx) => ({
+        itemId: Number(itemsHost.querySelector(`[data-item-id="${idx}"]`)?.value || 0),
+        quantity: Number(itemsHost.querySelector(`[data-item-qty="${idx}"]`)?.value || 0),
+      }));
+      if (!items.length || items.some((x) => !x.itemId || !isIntegerLike(x.quantity) || x.quantity < 1))
+        return toast("Введите целое число");
+      const payload = {
+        items,
+        orderDate: new Date(String(fd.get("orderDate"))).toISOString(),
+        dueDate: new Date(String(fd.get("dueDate"))).toISOString(),
+        orderType: String(fd.get("orderType")) === "closed" ? "closed" : "open",
+      };
+      if (editing) state.orders[editIndex] = payload;
+      else state.orders.push(payload);
+      saveOrders();
+      closeModal();
+      renderOrders();
+      toast(editing ? "Заказ изменен" : "Заказ добавлен", true);
+    });
+  }
+
   async function deleteItem(id) {
     if (!confirm(`Удалить позицию с ID ${id}? Будут удалены связанные строки спецификации и складские движения по ним.`)) return;
     try {
+      const row = state.items.find((x) => x.id === id);
       await api(`/api/Items/${id}`, { method: "DELETE" });
+      if (row) {
+        const payload = {
+          itemId: 0,
+          itemCode: row.code || null,
+          itemName: row.name,
+          itemType: row.type,
+          unit: row.unit || null,
+          unitCost: row.unitCost,
+          sellingPrice: row.sellingPrice,
+        };
+        setUndoAction("Отмена удаления номенклатуры", () => api("/api/Items", { method: "POST", body: JSON.stringify(payload) }));
+      }
       toast("Удалено", true);
       await loadAll();
     } catch (err) {
@@ -641,7 +1021,17 @@
   async function deleteBom(id) {
     if (!confirm(`Удалить строку спецификации с ID ${id}? Складские операции по этой строке будут удалены.`)) return;
     try {
+      const row = state.boms.find((x) => x.id === id);
       await api(`/api/Boms/${id}`, { method: "DELETE" });
+      if (row) {
+        const payload = {
+          bomId: 0,
+          parentItemId: row.parentItemId,
+          childItemId: row.childItemId,
+          quantity: row.quantity,
+        };
+        setUndoAction("Отмена удаления BOM", () => api("/api/Boms", { method: "POST", body: JSON.stringify(payload) }));
+      }
       toast("Удалено", true);
       await loadAll();
     } catch (err) {
@@ -652,7 +1042,20 @@
   async function deleteStock(id) {
     if (!confirm(`Удалить операцию с ID ${id}?`)) return;
     try {
+      const row = state.stock.find((x) => x.id === id);
       await api(`/api/StockOperations/${id}`, { method: "DELETE" });
+      if (row) {
+        const payload = {
+          stockOperationId: 0,
+          specificationId: row.specificationId,
+          date: row.date,
+          quantity: row.quantity,
+          operationType: row.operationType,
+        };
+        setUndoAction("Отмена удаления операции", () =>
+          api("/api/StockOperations", { method: "POST", body: JSON.stringify(payload) }),
+        );
+      }
       toast("Удалено", true);
       await loadAll();
     } catch (err) {
@@ -674,6 +1077,22 @@
   document.getElementById("btnAddItem").addEventListener("click", () => openItemModal(null));
   document.getElementById("btnAddBom").addEventListener("click", () => openBomModal(null));
   document.getElementById("btnAddStock").addEventListener("click", () => openStockModal(null));
+  document.getElementById("btnAddOrder")?.addEventListener("click", () => openOrderModal());
+  document.getElementById("btnSortOperation")?.addEventListener("click", () => {
+    state.stockOpSortAsc = !state.stockOpSortAsc;
+    renderStock();
+  });
+  document.getElementById("btnUndo")?.addEventListener("click", async () => {
+    if (!state.undo) return;
+    try {
+      await state.undo.run();
+      clearUndoAction();
+      toast("Последнее действие отменено", true);
+      await loadAll();
+    } catch (err) {
+      toast(err.message || "Не удалось отменить последнее действие");
+    }
+  });
   document.getElementById("selectProduct")?.addEventListener("change", () => {
     fetchCapacity();
     fetchProductionStats();
@@ -704,12 +1123,12 @@
     const sel = document.getElementById("selectProduct");
     const inp = document.getElementById("inputProduceQty");
     const id = Number(sel?.value);
-    const qty = Math.floor(Number(inp?.value));
+    const qty = Number(inp?.value);
     if (!id) {
       toast("Выберите изделие.");
       return;
     }
-    if (!Number.isFinite(qty) || qty < 1) {
+    if (!Number.isFinite(qty) || qty < 1 || !isIntegerLike(qty)) {
       toast("Укажите целое количество ≥ 1.");
       return;
     }
@@ -738,6 +1157,8 @@
       setApiError("Ошибка обновления: " + m);
     }
   });
+
+  applyIntegerValidation(document);
 
   loadAll().catch((err) => {
     const m = err?.message || String(err);

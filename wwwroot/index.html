@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>MRP система модели «Велосипед»</title>
-  <link rel="stylesheet" href="css/app.css?v=8" />
+  <link rel="stylesheet" href="css/app.css?v=9" />
 </head>
 <body>
   <div class="container">
@@ -14,6 +14,7 @@
 
     <div class="top-actions">
       <button class="btn" id="btnRefresh" type="button">Обновить</button>
+      <button class="btn" id="btnUndo" type="button" disabled>Отмена</button>
       <a class="link" href="/swagger/index.html" target="_blank" rel="noopener">Swagger</a>
     </div>
 
@@ -22,7 +23,7 @@
       <button class="tab" data-view="boms" type="button">Спецификация</button>
       <button class="tab" data-view="stock" type="button">Склад</button>
       <button class="tab" data-view="balances" type="button">Остатки</button>
-      <button class="tab" data-view="production" type="button">Производство</button>
+      <button class="tab" data-view="orders" type="button">Заказы</button>
     </div>
 
     <div id="toastHost" class="toast-host"></div>
@@ -42,7 +43,7 @@
             <th>Тип</th>
             <th>Ед.</th>
             <th>Себестоимость</th>
-            <th></th>
+            <th>Действие</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -63,7 +64,7 @@
             <th>Родитель</th>
             <th>Компонент</th>
             <th>Кол-во</th>
-            <th></th>
+            <th>Действие</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -72,7 +73,6 @@
     </section>
 
     <section id="view-stock" class="view">
-      <p class="section-hint">Движения по строке BOM; остаток считается для <strong>компонента</strong> этой строки.</p>
       <div class="section-actions">
         <button class="btn btn--primary" id="btnAddStock" type="button">Добавить операцию</button>
       </div>
@@ -81,11 +81,11 @@
         <thead>
           <tr>
             <th>ID</th>
-            <th>Строка BOM</th>
+            <th>BOM</th>
             <th>Дата</th>
             <th>Кол-во</th>
-            <th>Операция</th>
-            <th></th>
+            <th><button class="btn btn--small" id="btnSortOperation" type="button">Операция</button></th>
+            <th>Действие</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -94,7 +94,6 @@
     </section>
 
     <section id="view-balances" class="view">
-      <p class="section-hint">Итог = приход − расход + корректировка (по компоненту в строке BOM).</p>
       <div class="table-wrap">
       <table class="table table--nums" id="tableBalances">
         <thead>
@@ -105,7 +104,6 @@
             <th>Ед.</th>
             <th>Приход</th>
             <th>Расход</th>
-            <th>Корр.</th>
             <th>Итог</th>
           </tr>
         </thead>
@@ -114,22 +112,26 @@
       </div>
     </section>
 
-    <section id="view-production" class="view">
-      <div class="production-panel">
-        <div class="production-row">
-          <button class="btn" id="btnReceiptMaterials" type="button">Приход материалов на 10 велосипедов</button>
-        </div>
-        <div class="form-row production-select">
-          <label for="selectProduct">Готовая продукция</label>
-          <select id="selectProduct"></select>
-        </div>
-        <div id="productionStats" class="production-stats-wrap"></div>
-        <div id="capacityInfo" class="capacity-info"></div>
-        <div class="production-row production-actions">
-          <label class="production-qty-label" for="inputProduceQty">Количество, шт.</label>
-          <input id="inputProduceQty" type="number" min="1" step="1" value="1" />
-          <button class="btn btn--primary" id="btnProduce" type="button">Произвести</button>
-        </div>
+    <section id="view-orders" class="view">
+      <div class="section-actions">
+        <button class="btn btn--primary" id="btnAddOrder" type="button">Добавить заказ</button>
+      </div>
+      <div class="table-wrap">
+      <table class="table" id="tableOrders">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Изделие</th>
+            <th>Дата оформления</th>
+            <th>Дата готовности</th>
+            <th>Тип заказа</th>
+            <th>Действие</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      </div>
+      <div class="production-panel" hidden>
       </div>
     </section>
   </div>
@@ -145,6 +147,6 @@
     </div>
   </div>
 
-  <script src="js/app.js?v=8"></script>
+  <script src="js/app.js?v=9"></script>
 </body>
 </html>
