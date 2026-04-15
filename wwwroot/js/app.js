@@ -228,6 +228,20 @@
     localStorage.setItem("mrpOrdersV1", JSON.stringify(state.orders));
   }
 
+  function cloneOrders() {
+    return JSON.parse(JSON.stringify(state.orders));
+  }
+
+  function setOrdersUndo(label, previousOrders) {
+    setUndoAction(label, async () => {
+      state.orders = JSON.parse(JSON.stringify(previousOrders));
+      saveOrders();
+      rebuildDisplayBalances();
+      renderBalances();
+      renderOrders();
+    });
+  }
+
   function stockDateRu(value) {
     if (!value) return "-";
     const d = new Date(value);
@@ -299,8 +313,8 @@
       return new Date(b.date).getTime() - new Date(a.date).getTime();
     });
     state.balances = balancesRaw.map(normalizeBalance).filter((x) => x.itemCode !== "SYS-GP");
-    rebuildDisplayBalances();
     loadOrders();
+    rebuildDisplayBalances();
 
     renderItems();
     renderBoms();
@@ -346,7 +360,8 @@
       if (memo.has(itemId)) return memo.get(itemId);
       if (stack.has(itemId)) return 0;
       stack.add(itemId);
-      const direct = Number(baseByItem.get(itemId)?.currentStock ?? 0);
+      const rawRow = baseByItem.get(itemId);
+      const direct = Number(rawRow?.receiptQty ?? 0) - Number(rawRow?.issueQty ?? 0);
       const children = childrenByParent.get(itemId) || [];
       if (!children.length) {
         memo.set(itemId, direct);
@@ -366,8 +381,20 @@
       return total;
     }
 
+    const closedByItem = new Map();
+    for (const order of state.orders) {
+      if (order?.orderType !== "closed" || !Array.isArray(order.items)) continue;
+      for (const line of order.items) {
+        const itemId = Number(line.itemId);
+        const qty = Number(line.quantity) || 0;
+        closedByItem.set(itemId, (closedByItem.get(itemId) || 0) + qty);
+      }
+    }
+
     state.balances = state.items.map((it) => {
       const raw = baseByItem.get(it.id);
+      const closedQty = closedByItem.get(it.id) || 0;
+      const currentStock = Math.max(0, Number(available(it.id)) - closedQty);
       return {
         itemId: it.id,
         itemCode: it.code || "",
@@ -375,9 +402,13 @@
         unit: it.unit || "",
         receiptQty: Number(raw?.receiptQty ?? 0),
         issueQty: Number(raw?.issueQty ?? 0),
-        currentStock: Number(available(it.id)),
+        currentStock,
       };
     });
+  }
+
+  function availableQtyByItemId(itemId) {
+    return Number(state.balances.find((x) => x.itemId === Number(itemId))?.currentStock ?? 0);
   }
 
   function renderCapacityHtml(c) {
@@ -592,12 +623,16 @@
     return v === "closed" ? "Закрытый" : "Открытый";
   }
 
-  function orderItemsText(order) {
+  function orderItemsNames(order) {
     const items = Array.isArray(order.items) ? order.items : [];
     if (!items.length) return "-";
-    return items
-      .map((x) => `${Number(x.quantity)} ${itemNameById(Number(x.itemId))}`)
-      .join(", ");
+    return items.map((x) => itemNameById(Number(x.itemId))).join(", ");
+  }
+
+  function orderItemsQty(order) {
+    const items = Array.isArray(order.items) ? order.items : [];
+    if (!items.length) return "-";
+    return items.map((x) => String(Number(x.quantity) || 0)).join(", ");
   }
 
   function renderOrders() {
@@ -616,7 +651,8 @@
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td>${idx + 1}</td>
-          <td>${esc(orderItemsText(o))}</td>
+          <td>${esc(orderItemsNames(o))}</td>
+          <td>${esc(orderItemsQty(o))}</td>
           <td>${esc(stockDateRu(o.orderDate))}</td>
           <td>${esc(stockDateRu(o.dueDate))}</td>
           <td>${esc(orderTypeRu(o.orderType))}</td>
@@ -638,18 +674,33 @@
         b.addEventListener("click", () => {
           const idx = Number(b.dataset.closeOrder);
           if (!state.orders[idx] || state.orders[idx].orderType === "closed") return;
+          const order = state.orders[idx];
+          for (const line of order.items || []) {
+            const avail = availableQtyByItemId(line.itemId);
+            if (Number(line.quantity) > avail) {
+              return toast(`Недостаточно остатка: в наличии ${avail} ${itemNameById(line.itemId).toLowerCase()}`);
+            }
+          }
+          const prevOrders = cloneOrders();
           state.orders[idx].orderType = "closed";
           saveOrders();
+          rebuildDisplayBalances();
+          renderBalances();
           renderOrders();
+          setOrdersUndo("Отмена закрытия заказа", prevOrders);
           toast("Заказ закрыт", true);
         }),
       );
       tb.querySelectorAll("[data-del-order]").forEach((b) =>
         b.addEventListener("click", () => {
           const idx = Number(b.dataset.delOrder);
+          const prevOrders = cloneOrders();
           state.orders.splice(idx, 1);
           saveOrders();
+          rebuildDisplayBalances();
+          renderBalances();
           renderOrders();
+          setOrdersUndo("Отмена удаления заказа", prevOrders);
           toast("Заказ удален", true);
         }),
       );
@@ -942,11 +993,12 @@
       ? current.items
       : [{ itemId: nodes[0].id, quantity: 1 }];
     const drawOrderItems = () => {
-      itemsHost.innerHTML = initialItems
+           itemsHost.innerHTML = initialItems
         .map(
-          (x, idx) => `<div class="production-row" data-order-item="${idx}">
+          (x, idx) => `<div class="order-line" data-order-item="${idx}">
             <select data-item-id="${idx}">${options}</select>
             <input data-item-qty="${idx}" type="number" min="1" step="1" value="${Number(x.quantity) || 1}" />
+            <input data-item-available="${idx}" type="text" readonly value="" title="В наличии" />
             <button class="btn btn--small btn--danger" type="button" data-remove-item="${idx}" ${initialItems.length === 1 ? "disabled" : ""}>Удалить</button>
           </div>`,
         )
@@ -954,6 +1006,16 @@
       initialItems.forEach((x, idx) => {
         const sel = itemsHost.querySelector(`[data-item-id="${idx}"]`);
         if (sel) sel.value = String(x.itemId);
+        const av = itemsHost.querySelector(`[data-item-available="${idx}"]`);
+        if (av) av.value = `В наличии: ${availableQtyByItemId(x.itemId)}`;
+      });
+      const selectedIds = initialItems.map((x) => String(x.itemId));
+      initialItems.forEach((x, idx) => {
+        const sel = itemsHost.querySelector(`[data-item-id="${idx}"]`);
+        if (!sel) return;
+        [...sel.options].forEach((opt) => {
+          opt.disabled = opt.value !== String(x.itemId) && selectedIds.includes(opt.value);
+        });
       });
       applyIntegerValidation(itemsHost);
       itemsHost.querySelectorAll("[data-remove-item]").forEach((b) =>
@@ -963,10 +1025,31 @@
           drawOrderItems();
         }),
       );
+      itemsHost.querySelectorAll("select[data-item-id]").forEach((s) =>
+        s.addEventListener("change", () => {
+          const idx = Number(s.dataset.itemId);
+          initialItems[idx].itemId = Number(s.value);
+          drawOrderItems();
+        }),
+      );
+      itemsHost.querySelectorAll("[data-item-qty]").forEach((inp) =>
+        inp.addEventListener("input", () => {
+          const idx = Number(inp.dataset.itemQty);
+          initialItems[idx].quantity = Number(inp.value);
+          const av = itemsHost.querySelector(`[data-item-available="${idx}"]`);
+          if (av) av.value = `В наличии: ${availableQtyByItemId(initialItems[idx].itemId)}`;
+        }),
+      );
     };
     drawOrderItems();
     document.getElementById("btnAddOrderItem").addEventListener("click", () => {
-      initialItems.push({ itemId: nodes[0].id, quantity: 1 });
+      const used = new Set(initialItems.map((x) => Number(x.itemId)));
+      const next = nodes.find((n) => !used.has(n.id));
+      if (!next) {
+        toast("В заказе уже выбраны все доступные изделия");
+        return;
+      }
+      initialItems.push({ itemId: next.id, quantity: 1 });
       drawOrderItems();
     });
 
@@ -977,17 +1060,40 @@
         itemId: Number(itemsHost.querySelector(`[data-item-id="${idx}"]`)?.value || 0),
         quantity: Number(itemsHost.querySelector(`[data-item-qty="${idx}"]`)?.value || 0),
       }));
+      const uniqueIds = new Set(items.map((x) => x.itemId));
       if (!items.length || items.some((x) => !x.itemId || !isIntegerLike(x.quantity) || x.quantity < 1))
         return toast("Введите целое число");
+      if (uniqueIds.size !== items.length)
+        return toast("В одном заказе каждое изделие должно быть уникальным");
+      for (const line of items) {
+        const avail = availableQtyByItemId(line.itemId);
+        if (line.quantity > avail) {
+          return toast(`Недостаточно остатка: в наличии ${avail} ${itemNameById(line.itemId).toLowerCase()}`);
+        }
+      }
+
+      const orderDateRaw = String(fd.get("orderDate"));
+      const dueDateRaw = String(fd.get("dueDate"));
+      const orderDate = new Date(orderDateRaw).getTime();
+      const dueDate = new Date(dueDateRaw).getTime();
+      if (!Number.isFinite(orderDate) || !Number.isFinite(dueDate))
+        return toast("Проверьте даты заказа");
+      if (dueDate - orderDate < 60 * 60 * 1000)
+        return toast("Дата готовности должна быть минимум на 1 час позже даты оформления");
+
+      const prevOrders = cloneOrders();
       const payload = {
         items,
-        orderDate: new Date(String(fd.get("orderDate"))).toISOString(),
-        dueDate: new Date(String(fd.get("dueDate"))).toISOString(),
+        orderDate: new Date(orderDateRaw).toISOString(),
+        dueDate: new Date(dueDateRaw).toISOString(),
         orderType: String(fd.get("orderType")) === "closed" ? "closed" : "open",
       };
       if (editing) state.orders[editIndex] = payload;
       else state.orders.push(payload);
       saveOrders();
+      rebuildDisplayBalances();
+      renderBalances();
+      setOrdersUndo(editing ? "Отмена изменения заказа" : "Отмена создания заказа", prevOrders);
       closeModal();
       renderOrders();
       toast(editing ? "Заказ изменен" : "Заказ добавлен", true);

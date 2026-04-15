@@ -8,6 +8,8 @@ using System.Threading.Tasks;
 
 namespace MRP.Api.Controllers;
 
+//Контроллер Склада
+
 [ApiController]
 [Route("api/[controller]")]
 public class StockOperationsController : ControllerBase

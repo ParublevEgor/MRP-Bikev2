@@ -6,6 +6,8 @@ using MRP.Api.Models;
 
 namespace MRP.Api.Controllers;
 
+//Контроллер 
+
 [ApiController]
 [Route("api/[controller]")]
 public class ProductionController : ControllerBase

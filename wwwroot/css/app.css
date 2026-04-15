@@ -193,3 +193,39 @@ h1 { margin: 0 0 6px; font-size: 1.35rem; font-weight: 700; }
   padding: 6px 8px;
   font-size: 13px;
 }
+
+.order-line {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  width: 100%;
+}
+.order-line select {
+  flex: 1 1 160px;
+  min-width: 140px;
+  border: 1px solid #cfd8e3;
+  border-radius: 8px;
+  padding: 8px;
+}
+.order-line input[type="number"] {
+  width: 80px;
+  flex-shrink: 0;
+  border: 1px solid #cfd8e3;
+  border-radius: 8px;
+  padding: 8px;
+}
+.order-line input[readonly] {
+  flex: 0 1 130px;
+  min-width: 110px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 13px;
+}
+.order-line .btn--danger {
+  flex-shrink: 0;
+  margin-left: auto;
+}
