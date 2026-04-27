@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>MRP система модели «Велосипед»</title>
-  <link rel="stylesheet" href="css/app.css?v=10" />
+  <link rel="stylesheet" href="css/app.css?v=14" />
 </head>
 <body>
   <div class="container">
@@ -76,15 +76,56 @@
       <div class="section-actions">
         <button class="btn btn--primary" id="btnAddStock" type="button">Добавить операцию</button>
       </div>
+      <div class="stock-toolbar" id="stockToolbar">
+        <div class="stock-toolbar__head">
+          <span class="stock-toolbar__title">Поиск по складу</span>
+          <button class="btn btn--small stock-toolbar__reset" id="stockFilterReset" type="button">Сбросить</button>
+        </div>
+        <div class="stock-filter-grid">
+          <label class="stock-filter-field">
+            <span class="stock-filter-field__label">ID</span>
+            <input type="text" id="stockFilterId" inputmode="numeric" autocomplete="off" placeholder="Напр. 12" />
+          </label>
+          <label class="stock-filter-field">
+            <span class="stock-filter-field__label">Спецификация</span>
+            <input type="text" id="stockFilterSpec" autocomplete="off" placeholder="Наименование" />
+          </label>
+          <label class="stock-filter-field">
+            <span class="stock-filter-field__label">Дата</span>
+            <input type="date" id="stockFilterDate" />
+          </label>
+          <label class="stock-filter-field">
+            <span class="stock-filter-field__label">Время</span>
+            <input type="time" id="stockFilterTime" />
+          </label>
+          <label class="stock-filter-field">
+            <span class="stock-filter-field__label">Количество</span>
+            <input type="text" id="stockFilterQty" inputmode="decimal" autocomplete="off" placeholder="Напр. 10" />
+          </label>
+          <label class="stock-filter-field">
+            <span class="stock-filter-field__label">Операция</span>
+            <select id="stockFilterOp">
+              <option value="">Все</option>
+              <option value="Receipt">Приход</option>
+              <option value="Issue">Расход</option>
+            </select>
+          </label>
+        </div>
+      </div>
       <div class="table-wrap">
       <table class="table" id="tableStock">
         <thead>
           <tr>
             <th>ID</th>
-            <th>BOM</th>
+            <th>Спецификация</th>
             <th>Дата</th>
             <th>Кол-во</th>
-            <th><button class="btn btn--small" id="btnSortOperation" type="button">Операция</button></th>
+            <th class="th-operation">
+              <span class="th-operation__inner">
+                Операция
+                <button type="button" class="sort-arrow-btn" id="btnSortOperation" title="Сортировка по типу операции" aria-label="Сортировать по типу операции"><span id="stockSortArrow">↑</span></button>
+              </span>
+            </th>
             <th>Действие</th>
           </tr>
         </thead>
@@ -104,6 +145,7 @@
             <th>Ед.</th>
             <th>Приход</th>
             <th>Расход</th>
+            <th>Заказ</th>
             <th>Итог</th>
           </tr>
         </thead>
@@ -116,6 +158,54 @@
       <div class="section-actions">
         <button class="btn btn--primary" id="btnAddOrder" type="button">Добавить заказ</button>
       </div>
+      <div class="stock-toolbar" id="ordersToolbar">
+        <div class="stock-toolbar__head">
+          <span class="stock-toolbar__title">Поиск по заказам</span>
+          <button class="btn btn--small stock-toolbar__reset" id="orderFilterReset" type="button">Сбросить</button>
+        </div>
+        <div class="stock-filter-grid">
+          <label class="stock-filter-field">
+            <span class="stock-filter-field__label">ID</span>
+            <input type="text" id="orderFilterId" inputmode="numeric" autocomplete="off" placeholder="Напр. 4" />
+          </label>
+          <label class="stock-filter-field">
+            <span class="stock-filter-field__label">Изделие</span>
+            <input type="text" id="orderFilterProduct" autocomplete="off" placeholder="Наименование" />
+          </label>
+          <label class="stock-filter-field">
+            <span class="stock-filter-field__label">Количество</span>
+            <input type="text" id="orderFilterQty" autocomplete="off" placeholder="Напр. 10" />
+          </label>
+          <label class="stock-filter-field">
+            <span class="stock-filter-field__label">Дата оформления</span>
+            <input type="date" id="orderFilterOrderDate" />
+          </label>
+          <label class="stock-filter-field">
+            <span class="stock-filter-field__label">Время оформления</span>
+            <input type="time" id="orderFilterOrderTime" />
+          </label>
+          <label class="stock-filter-field">
+            <span class="stock-filter-field__label">Дата готовности</span>
+            <input type="date" id="orderFilterDueDate" />
+          </label>
+          <label class="stock-filter-field">
+            <span class="stock-filter-field__label">Время готовности</span>
+            <input type="time" id="orderFilterDueTime" />
+          </label>
+          <label class="stock-filter-field">
+            <span class="stock-filter-field__label">Тип</span>
+            <select id="orderFilterType">
+              <option value="">Все</option>
+              <option value="open">Открытый</option>
+              <option value="closed">Закрытый</option>
+            </select>
+          </label>
+          <label class="stock-filter-field">
+            <span class="stock-filter-field__label">Стоимость</span>
+            <input type="text" id="orderFilterCost" inputmode="decimal" autocomplete="off" placeholder="Напр. 15000" />
+          </label>
+        </div>
+      </div>
       <div class="table-wrap">
       <table class="table" id="tableOrders">
         <thead>
@@ -126,6 +216,8 @@
             <th>Дата оформления</th>
             <th>Дата готовности</th>
             <th>Тип заказа</th>
+            <th>Стоимость</th>
+            <th>Дефицит</th>
             <th>Действие</th>
           </tr>
         </thead>
@@ -148,6 +240,6 @@
     </div>
   </div>
 
-  <script src="js/app.js?v=10"></script>
+  <script src="js/app.js?v=15"></script>
 </body>
 </html>

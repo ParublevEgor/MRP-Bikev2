@@ -22,6 +22,9 @@ public class ItemStockBalanceDto
     [JsonPropertyName("issueQty")]
     public decimal IssueQty { get; set; }
 
+    [JsonPropertyName("orderQty")]
+    public decimal OrderQty { get; set; }
+
     [JsonPropertyName("adjustmentQty")]
     public decimal AdjustmentQty { get; set; }
 

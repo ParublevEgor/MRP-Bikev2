@@ -58,6 +58,7 @@
     unit: pick(x, ["unit", "Unit"], ""),
     receiptQty: Number(pick(x, ["receiptQty", "ReceiptQty"], 0)),
     issueQty: Number(pick(x, ["issueQty", "IssueQty"], 0)),
+    orderQty: Number(pick(x, ["orderQty", "OrderQty"], 0)),
     currentStock: Number(pick(x, ["currentStock", "CurrentStock"], 0)),
   });
 
@@ -173,10 +174,109 @@
     return itemNameById(b.childItemId);
   }
 
-  function bomOptionLabel(bomId) {
-    const b = state.boms.find((x) => x.id === bomId);
-    if (!b) return `BOM ${bomId}`;
-    return `BOM ${b.id}: ${itemNameById(b.parentItemId)} / ${itemNameById(b.childItemId)}`;
+  function bomNameOptionsHtml(selectedBomId) {
+    return state.boms
+      .map((b) => {
+        const name = itemNameById(b.childItemId);
+        return `<option value="${b.id}" ${b.id === selectedBomId ? "selected" : ""}>${esc(name)}</option>`;
+      })
+      .join("");
+  }
+
+  function itemNameOptionsHtml(selectedItemId) {
+    return state.items
+      .map((x) => {
+        return `<option value="${x.id}" ${Number(selectedItemId) === x.id ? "selected" : ""}>${esc(x.name)}</option>`;
+      })
+      .join("");
+  }
+
+  function localDateYMDFromDate(value) {
+    if (!value) return "";
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return "";
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
+  function localTimeHMFromDate(value) {
+    if (!value) return "";
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return "";
+    const p = (n) => String(n).padStart(2, "0");
+    return `${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  function getStockFilterFromDom() {
+    return {
+      id: document.getElementById("stockFilterId")?.value?.trim() ?? "",
+      spec: document.getElementById("stockFilterSpec")?.value?.trim().toLowerCase() ?? "",
+      date: document.getElementById("stockFilterDate")?.value ?? "",
+      time: document.getElementById("stockFilterTime")?.value ?? "",
+      qty: document.getElementById("stockFilterQty")?.value?.trim() ?? "",
+      op: document.getElementById("stockFilterOp")?.value ?? "",
+    };
+  }
+
+  function getOrdersFilterFromDom() {
+    return {
+      id: document.getElementById("orderFilterId")?.value?.trim() ?? "",
+      product: document.getElementById("orderFilterProduct")?.value?.trim().toLowerCase() ?? "",
+      qty: document.getElementById("orderFilterQty")?.value?.trim() ?? "",
+      orderDate: document.getElementById("orderFilterOrderDate")?.value ?? "",
+      orderTime: document.getElementById("orderFilterOrderTime")?.value ?? "",
+      dueDate: document.getElementById("orderFilterDueDate")?.value ?? "",
+      dueTime: document.getElementById("orderFilterDueTime")?.value ?? "",
+      type: document.getElementById("orderFilterType")?.value ?? "",
+      cost: document.getElementById("orderFilterCost")?.value?.trim() ?? "",
+    };
+  }
+
+  function orderRowMatchesFilter(o, f) {
+    const oid = Number(pick(o, ["orderId", "orderID", "OrderID"], 0));
+    if (f.id && !String(oid).includes(f.id)) return false;
+    const names = orderItemsNames(o).toLowerCase();
+    if (f.product && !names.includes(f.product)) return false;
+    const qtyJoined = orderItemsQty(o);
+    if (f.qty && !String(qtyJoined).includes(f.qty)) return false;
+    if (f.orderDate && localDateYMDFromDate(o.orderDate) !== f.orderDate) return false;
+    if (f.orderTime && localTimeHMFromDate(o.orderDate) !== f.orderTime) return false;
+    if (f.dueDate && localDateYMDFromDate(o.dueDate) !== f.dueDate) return false;
+    if (f.dueTime && localTimeHMFromDate(o.dueDate) !== f.dueTime) return false;
+    if (f.type === "open" && o.orderType !== "open") return false;
+    if (f.type === "closed" && o.orderType !== "closed") return false;
+    if (f.cost) {
+      const costNum = o.totalCostRub != null ? String(o.totalCostRub) : "";
+      if (!costNum.includes(f.cost)) return false;
+    }
+    return true;
+  }
+
+  function syncBomParentChildUi(form) {
+    const parentSel = form.querySelector('[name="parentItemId"]');
+    const childSel = form.querySelector('[name="childItemId"]');
+    if (!parentSel || !childSel) return;
+    const pid = Number(parentSel.value);
+    [...childSel.options].forEach((opt) => {
+      opt.disabled = Number(opt.value) === pid;
+    });
+    if (Number(childSel.value) === pid) {
+      const first = [...childSel.options].find((o) => !o.disabled);
+      if (first) childSel.value = first.value;
+    }
+  }
+
+  function stockRowMatchesFilter(x, f) {
+    const specText = bomLineLabel(x.specificationId).toLowerCase();
+    if (f.id && !String(x.id).includes(f.id)) return false;
+    if (f.spec && !specText.includes(f.spec)) return false;
+    if (f.date && localDateYMDFromDate(x.date) !== f.date) return false;
+    if (f.time && localTimeHMFromDate(x.date) !== f.time) return false;
+    if (f.qty && !String(x.quantity).includes(f.qty)) return false;
+    if (f.op && x.operationType !== f.op) return false;
+    return true;
   }
 
   function applyIntegerValidation(host = document) {
@@ -202,44 +302,9 @@
     btn.title = "";
   }
 
-  function loadOrders() {
-    try {
-      const raw = localStorage.getItem("mrpOrdersV1");
-      const parsed = raw ? JSON.parse(raw) : [];
-      state.orders = Array.isArray(parsed)
-        ? parsed.map((x) => {
-            if (Array.isArray(x.items)) return x;
-            if (x?.itemId) {
-              return {
-                ...x,
-                items: [{ itemId: Number(x.itemId), quantity: Number(x.quantity) || 1 }],
-              };
-            }
-            return x;
-          })
-        : [];
-      if (!Array.isArray(state.orders)) state.orders = [];
-    } catch {
-      state.orders = [];
-    }
-  }
-
-  function saveOrders() {
-    localStorage.setItem("mrpOrdersV1", JSON.stringify(state.orders));
-  }
-
-  function cloneOrders() {
-    return JSON.parse(JSON.stringify(state.orders));
-  }
-
-  function setOrdersUndo(label, previousOrders) {
-    setUndoAction(label, async () => {
-      state.orders = JSON.parse(JSON.stringify(previousOrders));
-      saveOrders();
-      rebuildDisplayBalances();
-      renderBalances();
-      renderOrders();
-    });
+  async function loadOrders() {
+    const raw = await api("/api/Orders").catch(() => []);
+    state.orders = Array.isArray(raw) ? raw : [];
   }
 
   function stockDateRu(value) {
@@ -313,7 +378,7 @@
       return new Date(b.date).getTime() - new Date(a.date).getTime();
     });
     state.balances = balancesRaw.map(normalizeBalance).filter((x) => x.itemCode !== "SYS-GP");
-    loadOrders();
+    await loadOrders();
     rebuildDisplayBalances();
 
     renderItems();
@@ -347,54 +412,8 @@
 
   function rebuildDisplayBalances() {
     const baseByItem = new Map(state.balances.map((x) => [x.itemId, x]));
-    const childrenByParent = new Map();
-    for (const b of state.boms) {
-      if (!childrenByParent.has(b.parentItemId)) childrenByParent.set(b.parentItemId, []);
-      childrenByParent.get(b.parentItemId).push(b);
-    }
-
-    const memo = new Map();
-    const stack = new Set();
-
-    function available(itemId) {
-      if (memo.has(itemId)) return memo.get(itemId);
-      if (stack.has(itemId)) return 0;
-      stack.add(itemId);
-      const rawRow = baseByItem.get(itemId);
-      const direct = Number(rawRow?.receiptQty ?? 0) - Number(rawRow?.issueQty ?? 0);
-      const children = childrenByParent.get(itemId) || [];
-      if (!children.length) {
-        memo.set(itemId, direct);
-        stack.delete(itemId);
-        return direct;
-      }
-      let derived = Number.POSITIVE_INFINITY;
-      for (const line of children) {
-        const childAvail = Math.max(0, Number(available(line.childItemId)));
-        const fromLine = line.quantity > 0 ? Math.floor(childAvail / Number(line.quantity)) : 0;
-        derived = Math.min(derived, fromLine);
-      }
-      const calculated = Number.isFinite(derived) ? derived : 0;
-      const total = Math.max(direct, calculated);
-      memo.set(itemId, total);
-      stack.delete(itemId);
-      return total;
-    }
-
-    const closedByItem = new Map();
-    for (const order of state.orders) {
-      if (order?.orderType !== "closed" || !Array.isArray(order.items)) continue;
-      for (const line of order.items) {
-        const itemId = Number(line.itemId);
-        const qty = Number(line.quantity) || 0;
-        closedByItem.set(itemId, (closedByItem.get(itemId) || 0) + qty);
-      }
-    }
-
     state.balances = state.items.map((it) => {
       const raw = baseByItem.get(it.id);
-      const closedQty = closedByItem.get(it.id) || 0;
-      const currentStock = Math.max(0, Number(available(it.id)) - closedQty);
       return {
         itemId: it.id,
         itemCode: it.code || "",
@@ -402,7 +421,8 @@
         unit: it.unit || "",
         receiptQty: Number(raw?.receiptQty ?? 0),
         issueQty: Number(raw?.issueQty ?? 0),
-        currentStock,
+        orderQty: Number(raw?.orderQty ?? 0),
+        currentStock: Number(raw?.currentStock ?? 0),
       };
     });
   }
@@ -558,14 +578,24 @@
 
   function renderStock() {
     const tb = document.querySelector("#tableStock tbody");
+    const arrowEl = document.getElementById("stockSortArrow");
+    if (arrowEl) arrowEl.textContent = state.stockOpSortAsc ? "↑" : "↓";
     tb.innerHTML = "";
     if (!state.stock.length) {
       tb.innerHTML =
-        '<tr><td colspan="6"><div class="empty">Нет операций - нужна хотя бы одна строка BOM.</div></td></tr>';
+        '<tr><td colspan="6"><div class="empty">Нет операций — добавьте строки спецификации и операцию.</div></td></tr>';
       return;
     }
 
-    const sorted = [...state.stock].sort((a, b) => {
+    const filter = getStockFilterFromDom();
+    const filtered = state.stock.filter((x) => stockRowMatchesFilter(x, filter));
+    if (!filtered.length) {
+      tb.innerHTML =
+        '<tr><td colspan="6"><div class="empty">Нет строк по текущему фильтру — измените условия или нажмите «Сбросить».</div></td></tr>';
+      return;
+    }
+
+    const sorted = [...filtered].sort((a, b) => {
       const aw = a.operationType === "Receipt" ? 0 : 1;
       const bw = b.operationType === "Receipt" ? 0 : 1;
       if (aw !== bw) return state.stockOpSortAsc ? aw - bw : bw - aw;
@@ -601,7 +631,7 @@
     if (!tb) return;
     tb.innerHTML = "";
     if (!state.balances.length) {
-      tb.innerHTML = '<tr><td colspan="7"><div class="empty">Нет данных об остатках.</div></td></tr>';
+      tb.innerHTML = '<tr><td colspan="8"><div class="empty">Нет данных об остатках.</div></td></tr>';
       return;
     }
 
@@ -614,6 +644,7 @@
         <td>${esc(x.unit || "-")}</td>
         <td class="num">${toQty(x.receiptQty)}</td>
         <td class="num">${toQty(x.issueQty)}</td>
+        <td class="num">${toQty(x.orderQty)}</td>
         <td class="num num--total">${toQty(x.currentStock)}</td>`;
       tb.appendChild(tr);
     }
@@ -635,6 +666,85 @@
     return items.map((x) => String(Number(x.quantity) || 0)).join(", ");
   }
 
+  function formatDeficit(order) {
+    const lines = Array.isArray(order?.deficit) ? order.deficit : [];
+    if (!lines.length) return "Нет";
+    return lines
+      .slice(0, 3)
+      .map((x) => `${x.itemName || `ID ${x.itemId}`}: -${toQty(x.deficitQty)}`)
+      .join("; ");
+  }
+
+  function normalizeDeficitLine(x) {
+    return {
+      itemId: Number(pick(x, ["itemId", "itemID", "ItemId"], 0)),
+      itemName: String(pick(x, ["itemName", "ItemName"], "") ?? ""),
+      requiredQty: Number(pick(x, ["requiredQty", "RequiredQty"], 0)),
+      inStockQty: Number(pick(x, ["inStockQty", "InStockQty"], 0)),
+      deficitQty: Number(pick(x, ["deficitQty", "DeficitQty"], 0)),
+    };
+  }
+
+  function unitByItemId(itemId) {
+    const it = state.items.find((x) => x.id === Number(itemId));
+    return it?.unit ? String(it.unit) : "—";
+  }
+
+  function openOrderDeficitModal(order) {
+    const orderId = Number(pick(order, ["orderId", "orderID", "OrderID"], 0));
+    const lines = Array.isArray(order?.deficit) ? order.deficit.map(normalizeDeficitLine) : [];
+    const sorted = [...lines].sort((a, b) => {
+      const db = b.deficitQty - a.deficitQty;
+      if (db !== 0) return db;
+      return String(a.itemName).localeCompare(String(b.itemName), "ru");
+    });
+
+    let rowsHtml;
+    if (!sorted.length) {
+      rowsHtml =
+        '<tr><td colspan="7"><div class="empty">По этому заказу дефицита нет: с учётом очереди FIFO склад покрывает разузлованную потребность.</div></td></tr>';
+    } else {
+      rowsHtml = sorted
+        .map((row, idx) => {
+          return `<tr>
+            <td>${idx + 1}</td>
+            <td class="mono">${row.itemId}</td>
+            <td class="deficit-name">${esc(row.itemName)}</td>
+            <td>${esc(unitByItemId(row.itemId))}</td>
+            <td class="num">${toQty(row.requiredQty)}</td>
+            <td class="num">${toQty(row.inStockQty)}</td>
+            <td class="num num--deficit">${toQty(row.deficitQty)}</td>
+          </tr>`;
+        })
+        .join("");
+    }
+
+    openModal(
+      orderId ? `Дефицит (заказ № ${orderId})` : "Дефицит",
+      `<p class="modal-hint"><strong>Дефицит только этого заказа:</strong> потребность в материалах после разузлования спецификации (BOM) до конечных позиций; склад распределяется между открытыми заказами по очереди FIFO (сначала по дате оформления, затем по номеру заказа). В таблице: требуется на заказ, остаток на момент распределения, нехватка.</p>
+      <div class="table-wrap">
+        <table class="table table--nums table--compact deficit-detail-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>ID</th>
+              <th>Наименование</th>
+              <th>Ед.</th>
+              <th>Требуется</th>
+              <th>В наличии</th>
+              <th>Дефицит</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+      <div class="form-actions">
+        <button class="btn" type="button" data-close-modal>Закрыть</button>
+      </div>`,
+      { wide: true },
+    );
+  }
+
   function renderOrders() {
     const tb = document.querySelector("#tableOrders tbody");
     if (!tb) return;
@@ -642,66 +752,97 @@
     const allowedNodeIds = new Set(
       state.items.filter((x) => x.type !== "Material").map((x) => x.id),
     );
-    const rows = state.orders.filter((o) => (o.items || []).every((x) => allowedNodeIds.has(Number(x.itemId))));
-    if (!rows.length) {
-      tb.innerHTML = '<tr><td colspan="7"><div class="empty">Нет заказов.</div></td></tr>';
+    const filter = getOrdersFilterFromDom();
+    const base = state.orders.filter((o) => (o.items || []).every((x) => allowedNodeIds.has(Number(x.itemId))));
+    const rows = base
+      .filter((o) => orderRowMatchesFilter(o, filter))
+      .sort((a, b) => {
+        const ida = Number(pick(a, ["orderId", "orderID", "OrderID"], 0));
+        const idb = Number(pick(b, ["orderId", "orderID", "OrderID"], 0));
+        return ida - idb;
+      });
+    if (!base.length) {
+      tb.innerHTML = '<tr><td colspan="9"><div class="empty">Нет заказов.</div></td></tr>';
+    } else if (!rows.length) {
+      tb.innerHTML =
+        '<tr><td colspan="9"><div class="empty">Нет заказов по текущему фильтру — измените условия или нажмите «Сбросить».</div></td></tr>';
     } else {
-      rows.forEach((o, idx) => {
+      rows.forEach((o) => {
+        const orderId = Number(pick(o, ["orderId", "orderID", "OrderID"], 0));
         const isClosed = o.orderType === "closed";
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td>${idx + 1}</td>
+          <td class="mono">${orderId}</td>
           <td>${esc(orderItemsNames(o))}</td>
           <td>${esc(orderItemsQty(o))}</td>
           <td>${esc(stockDateRu(o.orderDate))}</td>
           <td>${esc(stockDateRu(o.dueDate))}</td>
           <td>${esc(orderTypeRu(o.orderType))}</td>
+          <td>${toMoney(o.totalCostRub)}</td>
+          <td class="orders-deficit-cell">
+            <span class="orders-deficit-preview" title="${esc(formatDeficit(o))}">${esc(formatDeficit(o))}</span>
+            <button class="btn btn--small" type="button" data-show-deficit="${orderId}">Подробнее</button>
+          </td>
           <td>
-            <button class="btn btn--small" data-edit-order="${idx}" type="button" ${isClosed ? "disabled" : ""}>Изменить</button>
-            <button class="btn btn--small" data-close-order="${idx}" type="button" ${isClosed ? "disabled" : ""}>Закрыть</button>
-            <button class="btn btn--small btn--danger" data-del-order="${idx}" type="button">Удалить</button>
+            <button class="btn btn--small" data-edit-order="${orderId}" type="button" ${isClosed ? "disabled" : ""}>Изменить</button>
+            <button class="btn btn--small" data-close-order="${orderId}" type="button" ${isClosed ? "disabled" : ""}>Закрыть</button>
+            <button class="btn btn--small btn--danger" data-del-order="${orderId}" type="button">Удалить</button>
           </td>`;
         tb.appendChild(tr);
       });
+      tb.querySelectorAll("[data-show-deficit]").forEach((b) =>
+        b.addEventListener("click", () => {
+          const orderId = Number(b.dataset.showDeficit);
+          const order = state.orders.find(
+            (x) => Number(pick(x, ["orderId", "orderID", "OrderID"], 0)) === orderId,
+          );
+          if (order) openOrderDeficitModal(order);
+        }),
+      );
       tb.querySelectorAll("[data-edit-order]").forEach((b) =>
         b.addEventListener("click", () => {
-          const idx = Number(b.dataset.editOrder);
-          if (state.orders[idx]?.orderType === "closed") return toast("Закрытый заказ изменять нельзя");
-          openOrderModal(idx);
+          const orderId = Number(b.dataset.editOrder);
+          const order = state.orders.find((x) => Number(x.orderId) === orderId);
+          if (order?.orderType === "closed") return toast("Закрытый заказ изменять нельзя");
+          openOrderModal(orderId);
         }),
       );
       tb.querySelectorAll("[data-close-order]").forEach((b) =>
-        b.addEventListener("click", () => {
-          const idx = Number(b.dataset.closeOrder);
-          if (!state.orders[idx] || state.orders[idx].orderType === "closed") return;
-          const order = state.orders[idx];
-          for (const line of order.items || []) {
-            const avail = availableQtyByItemId(line.itemId);
-            if (Number(line.quantity) > avail) {
-              return toast(`Недостаточно остатка: в наличии ${avail} ${itemNameById(line.itemId).toLowerCase()}`);
-            }
+        b.addEventListener("click", async () => {
+          const orderId = Number(b.dataset.closeOrder);
+          const order = state.orders.find((x) => Number(x.orderId) === orderId);
+          if (!order || order.orderType === "closed") return;
+          try {
+            await api(`/api/Orders/${orderId}/close`, { method: "POST" });
+            setUndoAction("Отмена закрытия заказа", () => api(`/api/Orders/${orderId}/open`, { method: "POST" }));
+            toast("Заказ закрыт", true);
+            await loadAll();
+          } catch (err) {
+            toast(err.message);
           }
-          const prevOrders = cloneOrders();
-          state.orders[idx].orderType = "closed";
-          saveOrders();
-          rebuildDisplayBalances();
-          renderBalances();
-          renderOrders();
-          setOrdersUndo("Отмена закрытия заказа", prevOrders);
-          toast("Заказ закрыт", true);
         }),
       );
       tb.querySelectorAll("[data-del-order]").forEach((b) =>
-        b.addEventListener("click", () => {
-          const idx = Number(b.dataset.delOrder);
-          const prevOrders = cloneOrders();
-          state.orders.splice(idx, 1);
-          saveOrders();
-          rebuildDisplayBalances();
-          renderBalances();
-          renderOrders();
-          setOrdersUndo("Отмена удаления заказа", prevOrders);
-          toast("Заказ удален", true);
+        b.addEventListener("click", async () => {
+          const orderId = Number(b.dataset.delOrder);
+          const order = state.orders.find((x) => Number(x.orderId) === orderId);
+          if (!order) return;
+          try {
+            await api(`/api/Orders/${orderId}`, { method: "DELETE" });
+            const undoPayload = {
+              orderDate: order.orderDate,
+              dueDate: order.dueDate,
+              orderType: order.orderType,
+              items: order.items || [],
+            };
+            setUndoAction("Отмена удаления заказа", () =>
+              api("/api/Orders", { method: "POST", body: JSON.stringify(undoPayload) }),
+            );
+            toast("Заказ удален", true);
+            await loadAll();
+          } catch (err) {
+            toast(err.message);
+          }
         }),
       );
     }
@@ -711,15 +852,19 @@
   const modalTitle = document.getElementById("modalTitle");
   const modalBody = document.getElementById("modalBody");
 
-  function openModal(title, html) {
+  function openModal(title, html, options = {}) {
     modalTitle.textContent = title;
     modalBody.innerHTML = html;
+    const dialog = modal.querySelector(".modal__dialog");
+    if (dialog) dialog.classList.toggle("modal__dialog--wide", !!options.wide);
     modal.hidden = false;
   }
 
   function closeModal() {
     modal.hidden = true;
     modalBody.innerHTML = "";
+    const dialog = modal.querySelector(".modal__dialog");
+    if (dialog) dialog.classList.remove("modal__dialog--wide");
   }
 
   modal.addEventListener("click", (e) => {
@@ -819,10 +964,10 @@
     const c = row?.childItemId ?? state.items[0].id;
 
     openModal(
-      edit ? `Строка BOM, ID ${id}` : "Новая строка BOM",
+      edit ? `Строка, ID ${id}` : "Новая строка",
       `<form id="formBom" class="form-grid">
-        <div class="form-row"><label>Родитель (сборка / изделие)</label><select name="parentItemId">${itemSelectOptionsHtml()}</select></div>
-        <div class="form-row"><label>Компонент (что списывается)</label><select name="childItemId">${itemSelectOptionsHtml()}</select></div>
+        <div class="form-row"><label>Родитель</label><select name="parentItemId">${itemNameOptionsHtml(p)}</select></div>
+        <div class="form-row"><label>Компонент</label><select name="childItemId">${itemNameOptionsHtml(c)}</select></div>
         <div class="form-row"><label>На 1 ед. родителя, шт.</label><input name="quantity" type="number" step="1" min="1" value="${row?.quantity ?? 1}" required /></div>
         <div class="form-actions">
           <button class="btn" type="button" data-close-modal>Отмена</button>
@@ -832,8 +977,10 @@
     );
     applyIntegerValidation(modalBody);
 
-    modalBody.querySelector('[name="parentItemId"]').value = String(p);
-    modalBody.querySelector('[name="childItemId"]').value = String(c);
+    const formBom = document.getElementById("formBom");
+    syncBomParentChildUi(formBom);
+    formBom.querySelector('[name="parentItemId"]')?.addEventListener("change", () => syncBomParentChildUi(formBom));
+    formBom.querySelector('[name="childItemId"]')?.addEventListener("change", () => syncBomParentChildUi(formBom));
 
     document.getElementById("formBom").addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -845,6 +992,8 @@
         quantity: Number(fd.get("quantity")),
       };
       if (!isIntegerLike(payload.quantity)) return toast("Количество в BOM должно быть целым числом.");
+      if (payload.parentItemId === payload.childItemId)
+        return toast("Родитель и компонент не могут быть одной и той же позицией.");
 
       try {
         const prev = row
@@ -890,20 +1039,15 @@
     const edit = !!row;
     const spec = row?.specificationId ?? state.boms[0].id;
 
-    const bomOptions = state.boms
-      .map((b) => {
-        const t = bomOptionLabel(b.id);
-        return `<option value="${b.id}" ${b.id === spec ? "selected" : ""}>${esc(t)}</option>`;
-      })
-      .join("");
+    const bomOptions = bomNameOptionsHtml(spec);
 
     openModal(
       edit ? `Операция, ID ${id}` : "Новая операция",
       `<form id="formStock" class="form-grid">
-        <div class="form-row"><label>BOM</label><select name="specificationId">${bomOptions}</select></div>
+        <div class="form-row"><label>Тип операции</label><select name="operationType">${opTypeOptionsHtml(row?.operationType || "Receipt")}</select></div>
+        <div class="form-row"><label>Наименование</label><select name="specificationId">${bomOptions}</select></div>
         <div class="form-row"><label>Дата и время</label><input name="date" type="datetime-local" value="${dateToLocalInput(row?.date)}" required /></div>
         <div class="form-row"><label>Количество</label><input name="quantity" type="number" step="1" min="1" value="${row?.quantity ?? 1}" required /></div>
-        <div class="form-row"><label>Тип операции</label><select name="operationType">${opTypeOptionsHtml(row?.operationType || "Receipt")}</select></div>
         <div class="form-actions">
           <button class="btn" type="button" data-close-modal>Отмена</button>
           <button class="btn btn--primary" type="submit">${edit ? "Сохранить" : "Создать"}</button>
@@ -954,14 +1098,18 @@
     });
   }
 
-  function openOrderModal(editIndex = null) {
+  function openOrderModal(editOrderId = null) {
     const nodes = state.items.filter((x) => x.type !== "Material");
     if (!nodes.length) {
       toast("Нет узлов для заказа.");
       return;
     }
-    const editing = editIndex != null;
-    const current = editing ? state.orders[editIndex] : null;
+    const editing = editOrderId != null;
+    const current = editing ? state.orders.find((x) => Number(x.orderId) === Number(editOrderId)) : null;
+    if (editing && !current) {
+      toast("Заказ не найден");
+      return;
+    }
     if (editing && current?.orderType === "closed") {
       toast("Закрытый заказ изменять нельзя");
       return;
@@ -1053,7 +1201,7 @@
       drawOrderItems();
     });
 
-    document.getElementById("formOrder").addEventListener("submit", (e) => {
+    document.getElementById("formOrder").addEventListener("submit", async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
       const items = initialItems.map((_, idx) => ({
@@ -1065,13 +1213,6 @@
         return toast("Введите целое число");
       if (uniqueIds.size !== items.length)
         return toast("В одном заказе каждое изделие должно быть уникальным");
-      for (const line of items) {
-        const avail = availableQtyByItemId(line.itemId);
-        if (line.quantity > avail) {
-          return toast(`Недостаточно остатка: в наличии ${avail} ${itemNameById(line.itemId).toLowerCase()}`);
-        }
-      }
-
       const orderDateRaw = String(fd.get("orderDate"));
       const dueDateRaw = String(fd.get("dueDate"));
       const orderDate = new Date(orderDateRaw).getTime();
@@ -1081,22 +1222,36 @@
       if (dueDate - orderDate < 60 * 60 * 1000)
         return toast("Дата готовности должна быть минимум на 1 час позже даты оформления");
 
-      const prevOrders = cloneOrders();
       const payload = {
         items,
         orderDate: new Date(orderDateRaw).toISOString(),
         dueDate: new Date(dueDateRaw).toISOString(),
         orderType: String(fd.get("orderType")) === "closed" ? "closed" : "open",
       };
-      if (editing) state.orders[editIndex] = payload;
-      else state.orders.push(payload);
-      saveOrders();
-      rebuildDisplayBalances();
-      renderBalances();
-      setOrdersUndo(editing ? "Отмена изменения заказа" : "Отмена создания заказа", prevOrders);
-      closeModal();
-      renderOrders();
-      toast(editing ? "Заказ изменен" : "Заказ добавлен", true);
+      try {
+        if (editing) {
+          const prev = {
+            orderDate: current.orderDate,
+            dueDate: current.dueDate,
+            orderType: current.orderType,
+            items: current.items || [],
+          };
+          await api(`/api/Orders/${editOrderId}`, { method: "PUT", body: JSON.stringify(payload) });
+          setUndoAction("Отмена изменения заказа", () =>
+            api(`/api/Orders/${editOrderId}`, { method: "PUT", body: JSON.stringify(prev) }),
+          );
+        } else {
+          const created = await api("/api/Orders", { method: "POST", body: JSON.stringify(payload) });
+          const createdId = Number(pick(created, ["orderId", "orderID", "OrderID"], 0));
+          if (createdId > 0)
+            setUndoAction("Отмена создания заказа", () => api(`/api/Orders/${createdId}`, { method: "DELETE" }));
+        }
+        closeModal();
+        toast(editing ? "Заказ изменен" : "Заказ добавлен", true);
+        await loadAll();
+      } catch (err) {
+        toast(err.message);
+      }
     });
   }
 
@@ -1188,6 +1343,17 @@
     state.stockOpSortAsc = !state.stockOpSortAsc;
     renderStock();
   });
+  document.getElementById("stockToolbar")?.addEventListener("input", () => renderStock());
+  document.getElementById("stockToolbar")?.addEventListener("change", () => renderStock());
+  document.getElementById("stockFilterReset")?.addEventListener("click", () => {
+    ["stockFilterId", "stockFilterSpec", "stockFilterDate", "stockFilterTime", "stockFilterQty"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.value = "";
+    });
+    const op = document.getElementById("stockFilterOp");
+    if (op) op.value = "";
+    renderStock();
+  });
   document.getElementById("btnUndo")?.addEventListener("click", async () => {
     if (!state.undo) return;
     try {
@@ -1262,6 +1428,26 @@
       toast(m);
       setApiError("Ошибка обновления: " + m);
     }
+  });
+  document.getElementById("ordersToolbar")?.addEventListener("input", () => renderOrders());
+  document.getElementById("ordersToolbar")?.addEventListener("change", () => renderOrders());
+  document.getElementById("orderFilterReset")?.addEventListener("click", () => {
+    [
+      "orderFilterId",
+      "orderFilterProduct",
+      "orderFilterQty",
+      "orderFilterOrderDate",
+      "orderFilterOrderTime",
+      "orderFilterDueDate",
+      "orderFilterDueTime",
+      "orderFilterCost",
+    ].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.value = "";
+    });
+    const t = document.getElementById("orderFilterType");
+    if (t) t.value = "";
+    renderOrders();
   });
 
   applyIntegerValidation(document);

@@ -42,12 +42,14 @@ public class ItemsController : ControllerBase
     [HttpGet("stock-balance")]
     public async Task<ActionResult<IEnumerable<ItemStockBalanceDto>>> GetStockBalance()
     {
+        var asOf = DateTime.UtcNow;
         var raw = await _context.StockOperations
             .Join(
                 _context.Boms,
                 s => s.SpecificationId,
                 b => b.BOMID,
-                (s, b) => new { b.ChildItemID, s.OperationType, s.Quantity })
+                (s, b) => new { b.ChildItemID, s.OperationType, s.Quantity, s.Date })
+            .Where(x => x.Quantity != 0 && x.Date <= asOf)
             .GroupBy(x => x.ChildItemID)
             .Select(g => new
             {
@@ -72,15 +74,28 @@ public class ItemsController : ControllerBase
             })
             .ToListAsync();
 
+        var openOrderQty = await _context.OrderLines
+            .Where(l => l.Order.Status == OrderStatus.Open)
+            .GroupBy(l => l.ItemID)
+            .Select(g => new { ItemId = g.Key, Qty = g.Sum(x => x.Quantity) })
+            .ToDictionaryAsync(x => x.ItemId, x => (decimal)x.Qty);
+
         foreach (var item in result)
         {
             if (!byItem.TryGetValue(item.ItemID, out var agg))
-                continue;
+            {
+                item.ReceiptQty = 0;
+                item.IssueQty = 0;
+            }
+            else
+            {
+                item.ReceiptQty = agg.ReceiptQty;
+                item.IssueQty = agg.IssueQty;
+            }
 
-            item.ReceiptQty = agg.ReceiptQty;
-            item.IssueQty = agg.IssueQty;
+            item.OrderQty = openOrderQty.GetValueOrDefault(item.ItemID);
             item.AdjustmentQty = 0;
-            item.CurrentStock = agg.ReceiptQty - agg.IssueQty;
+            item.CurrentStock = item.ReceiptQty - item.IssueQty - item.OrderQty;
         }
 
         return Ok(result);

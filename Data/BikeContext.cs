@@ -11,6 +11,8 @@ public class BikeContext : DbContext
     public DbSet<Item> Items => Set<Item>();
     public DbSet<Bom> Boms => Set<Bom>();
     public DbSet<StockOperation> StockOperations => Set<StockOperation>();
+    public DbSet<Order> Orders => Set<Order>();
+    public DbSet<OrderLine> OrderLines => Set<OrderLine>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -60,5 +62,22 @@ public class BikeContext : DbContext
             .WithMany()
             .HasForeignKey(s => s.SpecificationId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<Order>()
+            .Property(o => o.Status)
+            .HasConversion<string>()
+            .HasMaxLength(20);
+
+        modelBuilder.Entity<Order>()
+            .HasMany(o => o.Lines)
+            .WithOne(l => l.Order)
+            .HasForeignKey(l => l.OrderID)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<OrderLine>()
+            .HasOne(l => l.Item)
+            .WithMany()
+            .HasForeignKey(l => l.ItemID)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }

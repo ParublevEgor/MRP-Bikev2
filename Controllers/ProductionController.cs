@@ -6,7 +6,7 @@ using MRP.Api.Models;
 
 namespace MRP.Api.Controllers;
 
-//Контроллер 
+//Контроллер производственного расчёта и выпусков
 
 [ApiController]
 [Route("api/[controller]")]
@@ -425,12 +425,14 @@ public class ProductionController : ControllerBase
 
     private async Task<Dictionary<int, decimal>> GetCurrentStockByItemAsync()
     {
+        var now = DateTime.UtcNow;
         var raw = await _context.StockOperations
             .Join(
                 _context.Boms,
                 s => s.SpecificationId,
                 b => b.BOMID,
-                (s, b) => new { b.ChildItemID, s.OperationType, s.Quantity })
+                (s, b) => new { b.ChildItemID, s.OperationType, s.Quantity, s.Date })
+            .Where(x => x.Date <= now)
             .GroupBy(x => x.ChildItemID)
             .Select(g => new
             {
