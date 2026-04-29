@@ -16,7 +16,6 @@ public class Item
 
     [Required]
     [MaxLength(50)]
-    //public string ItemType { get; set; } = string.Empty;
     public ItemType ItemType { get; set; }
 
     public decimal? UnitCost { get; set; }

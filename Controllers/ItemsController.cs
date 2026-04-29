@@ -74,11 +74,19 @@ public class ItemsController : ControllerBase
             })
             .ToListAsync();
 
-        var openOrderQty = await _context.OrderLines
-            .Where(l => l.Order.Status == OrderStatus.Open)
-            .GroupBy(l => l.ItemID)
-            .Select(g => new { ItemId = g.Key, Qty = g.Sum(x => x.Quantity) })
-            .ToDictionaryAsync(x => x.ItemId, x => (decimal)x.Qty);
+        var boms = await _context.Boms.AsNoTracking().ToListAsync();
+        var allOrders = await _context.Orders
+            .AsNoTracking()
+            .Include(o => o.Lines)
+            .OrderBy(o => o.OrderDate)
+            .ThenBy(o => o.OrderID)
+            .ToListAsync();
+        var stockByItem = byItem.ToDictionary(x => x.Key, x => x.Value.ReceiptQty - x.Value.IssueQty);
+        var orderQty = BuildPlannedOrderQty(allOrders, boms, stockByItem);
+        var closedOrderQty = BuildPlannedOrderQty(
+            allOrders.Where(o => o.Status == OrderStatus.Closed).ToList(),
+            boms,
+            stockByItem);
 
         foreach (var item in result)
         {
@@ -93,9 +101,9 @@ public class ItemsController : ControllerBase
                 item.IssueQty = agg.IssueQty;
             }
 
-            item.OrderQty = openOrderQty.GetValueOrDefault(item.ItemID);
+            item.OrderQty = orderQty.GetValueOrDefault(item.ItemID);
             item.AdjustmentQty = 0;
-            item.CurrentStock = item.ReceiptQty - item.IssueQty - item.OrderQty;
+            item.CurrentStock = item.ReceiptQty - item.IssueQty - closedOrderQty.GetValueOrDefault(item.ItemID);
         }
 
         return Ok(result);
@@ -228,6 +236,83 @@ public class ItemsController : ControllerBase
         if (dto.SellingPrice is { } sellingPrice && sellingPrice != decimal.Truncate(sellingPrice))
             return "Отпускная цена должна быть целым числом.";
         return null;
+    }
+
+    private static Dictionary<int, decimal> BuildPlannedOrderQty(
+        List<Order> orders,
+        List<Bom> boms,
+        Dictionary<int, decimal> stockByItem)
+    {
+        var childrenByParent = boms
+            .GroupBy(x => x.ParentItemID)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var remaining = new Dictionary<int, decimal>();
+        foreach (var kv in stockByItem)
+            remaining[kv.Key] = Math.Max(0m, kv.Value);
+
+        var planned = new Dictionary<int, decimal>();
+
+        foreach (var order in orders)
+        {
+            foreach (var line in order.Lines)
+                ReserveOrExplodeForPlan(
+                    line.ItemID,
+                    line.Quantity,
+                    childrenByParent,
+                    remaining,
+                    planned,
+                    new HashSet<int>());
+        }
+
+        return planned;
+    }
+
+    private static void ReserveOrExplodeForPlan(
+        int itemId,
+        decimal requiredQty,
+        Dictionary<int, List<Bom>> childrenByParent,
+        Dictionary<int, decimal> remaining,
+        Dictionary<int, decimal> planned,
+        HashSet<int> visiting)
+    {
+        if (requiredQty <= 0m)
+            return;
+
+        planned[itemId] = planned.GetValueOrDefault(itemId) + requiredQty;
+
+        var available = Math.Max(0m, remaining.GetValueOrDefault(itemId));
+        var reserve = Math.Min(available, requiredQty);
+        remaining[itemId] = available - reserve;
+        var shortage = requiredQty - reserve;
+        if (shortage <= 0m)
+            return;
+
+        if (!childrenByParent.TryGetValue(itemId, out var lines) || lines.Count == 0)
+            return;
+
+        if (!visiting.Add(itemId))
+            return;
+
+        try
+        {
+            foreach (var bom in lines)
+            {
+                if (bom.Quantity <= 0m)
+                    continue;
+                ReserveOrExplodeForPlan(
+                    bom.ChildItemID,
+                    shortage * bom.Quantity,
+                    childrenByParent,
+                    remaining,
+                    planned,
+                    visiting);
+            }
+        }
+        finally
+        {
+            visiting.Remove(itemId);
+        }
     }
 
     private async Task<Dictionary<int, decimal?>> BuildComputedItemCostsAsync()

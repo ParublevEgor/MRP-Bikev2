@@ -1,5 +1,5 @@
 (() => {
-  const state = { items: [], boms: [], stock: [], balances: [], undo: null, stockOpSortAsc: true, orders: [] };
+  const state = { items: [], boms: [], stock: [], balances: [], undo: null, stockOpSortMode: "receipt", orders: [] };
 
   const ITEM_TYPE_RU = {
     Product: "Готовая продукция",
@@ -166,6 +166,10 @@
   function toQty(v) {
     if (v == null || Number.isNaN(Number(v))) return "-";
     return Number(v).toLocaleString("ru-RU", { maximumFractionDigits: 4 });
+  }
+
+  function numNegClass(v) {
+    return Number(v) < 0 ? " num--neg" : "";
   }
 
   function bomLineLabel(bomId) {
@@ -578,8 +582,23 @@
 
   function renderStock() {
     const tb = document.querySelector("#tableStock tbody");
+    const sortBtn = document.getElementById("btnSortOperation");
     const arrowEl = document.getElementById("stockSortArrow");
-    if (arrowEl) arrowEl.textContent = state.stockOpSortAsc ? "↑" : "↓";
+    if (arrowEl) {
+      if (state.stockOpSortMode === "receipt") arrowEl.textContent = "↑";
+      else if (state.stockOpSortMode === "issue") arrowEl.textContent = "↓";
+      else arrowEl.textContent = "•";
+    }
+    if (sortBtn) {
+      const label =
+        state.stockOpSortMode === "receipt"
+          ? "Сортировка: Приход → Расход"
+          : state.stockOpSortMode === "issue"
+            ? "Сортировка: Расход → Приход"
+            : "Сортировка: По умолчанию (по порядку добавления)";
+      sortBtn.title = `${label}. Нажмите для переключения.`;
+      sortBtn.setAttribute("aria-label", sortBtn.title);
+    }
     tb.innerHTML = "";
     if (!state.stock.length) {
       tb.innerHTML =
@@ -596,10 +615,15 @@
     }
 
     const sorted = [...filtered].sort((a, b) => {
+      if (state.stockOpSortMode === "default") {
+        return a.id - b.id;
+      }
       const aw = a.operationType === "Receipt" ? 0 : 1;
       const bw = b.operationType === "Receipt" ? 0 : 1;
-      if (aw !== bw) return state.stockOpSortAsc ? aw - bw : bw - aw;
-      return new Date(b.date).getTime() - new Date(a.date).getTime();
+      if (aw !== bw) {
+        return state.stockOpSortMode === "receipt" ? aw - bw : bw - aw;
+      }
+      return a.id - b.id;
     });
 
     for (const x of sorted) {
@@ -642,10 +666,10 @@
         <td class="mono">${esc(x.itemCode || "-")}</td>
         <td>${esc(x.itemName)}</td>
         <td>${esc(x.unit || "-")}</td>
-        <td class="num">${toQty(x.receiptQty)}</td>
-        <td class="num">${toQty(x.issueQty)}</td>
-        <td class="num">${toQty(x.orderQty)}</td>
-        <td class="num num--total">${toQty(x.currentStock)}</td>`;
+        <td class="num${numNegClass(x.receiptQty)}">${toQty(x.receiptQty)}</td>
+        <td class="num${numNegClass(x.issueQty)}">${toQty(x.issueQty)}</td>
+        <td class="num${numNegClass(x.orderQty)}">${toQty(x.orderQty)}</td>
+        <td class="num num--total${numNegClass(x.currentStock)}">${toQty(x.currentStock)}</td>`;
       tb.appendChild(tr);
     }
   }
@@ -721,8 +745,7 @@
 
     openModal(
       orderId ? `Дефицит (заказ № ${orderId})` : "Дефицит",
-      `<p class="modal-hint"><strong>Дефицит только этого заказа:</strong> потребность в материалах после разузлования спецификации (BOM) до конечных позиций; склад распределяется между открытыми заказами по очереди FIFO (сначала по дате оформления, затем по номеру заказа). В таблице: требуется на заказ, остаток на момент распределения, нехватка.</p>
-      <div class="table-wrap">
+      `<div class="table-wrap">
         <table class="table table--nums table--compact deficit-detail-table">
           <thead>
             <tr>
@@ -737,9 +760,6 @@
           </thead>
           <tbody>${rowsHtml}</tbody>
         </table>
-      </div>
-      <div class="form-actions">
-        <button class="btn" type="button" data-close-modal>Закрыть</button>
       </div>`,
       { wide: true },
     );
@@ -898,6 +918,13 @@
             <span class="input-suffix">₽</span>
           </div>
         </div>
+        <div class="form-row">
+          <label>Отпускная цена за единицу</label>
+          <div class="input-with-suffix">
+            <input name="sellingPrice" type="number" step="1" min="0" value="${row?.sellingPrice ?? ""}" />
+            <span class="input-suffix">₽</span>
+          </div>
+        </div>
         <div class="form-actions">
           <button class="btn" type="button" data-close-modal>Отмена</button>
           <button class="btn btn--primary" type="submit">${edit ? "Сохранить" : "Создать"}</button>
@@ -916,9 +943,11 @@
         itemType: String(fd.get("itemType") || "Component"),
         unit: fd.get("unit") || null,
         unitCost: fd.get("unitCost") === "" ? null : Number(fd.get("unitCost")),
-        sellingPrice: null,
+        sellingPrice: fd.get("sellingPrice") === "" ? null : Number(fd.get("sellingPrice")),
       };
       if (payload.unitCost != null && !isIntegerLike(payload.unitCost)) return toast("Себестоимость должна быть целым числом.");
+      if (payload.sellingPrice != null && !isIntegerLike(payload.sellingPrice))
+        return toast("Отпускная цена должна быть целым числом.");
       if (payload.unit && /\d/.test(String(payload.unit))) return toast("Единица измерения должна быть строкой, без цифр.");
 
       try {
@@ -1340,7 +1369,12 @@
   document.getElementById("btnAddStock").addEventListener("click", () => openStockModal(null));
   document.getElementById("btnAddOrder")?.addEventListener("click", () => openOrderModal());
   document.getElementById("btnSortOperation")?.addEventListener("click", () => {
-    state.stockOpSortAsc = !state.stockOpSortAsc;
+    state.stockOpSortMode =
+      state.stockOpSortMode === "receipt"
+        ? "issue"
+        : state.stockOpSortMode === "issue"
+          ? "default"
+          : "receipt";
     renderStock();
   });
   document.getElementById("stockToolbar")?.addEventListener("input", () => renderStock());

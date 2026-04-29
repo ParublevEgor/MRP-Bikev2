@@ -4,10 +4,8 @@
 
 namespace MRP_Bikev2.Migrations
 {
-    /// <inheritdoc />
     public partial class RemoveLeadTimeUniqueItemCode : Migration
     {
-        /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropColumn(
@@ -22,7 +20,6 @@ namespace MRP_Bikev2.Migrations
                 filter: "[ItemCode] IS NOT NULL");
         }
 
-        /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropIndex(

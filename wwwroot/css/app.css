@@ -201,6 +201,10 @@ h1 { margin: 0 0 6px; font-size: 1.35rem; font-weight: 700; }
   font-weight: 700;
   color: #0f172a;
 }
+.table--nums .num--neg {
+  color: #b91c1c;
+  font-weight: 700;
+}
 #tableBalances th:nth-last-child(-n+4),
 #tableBalances td:nth-last-child(-n+4) {
   text-align: center;
@@ -235,7 +239,7 @@ h1 { margin: 0 0 6px; font-size: 1.35rem; font-weight: 700; }
   color: #334155;
 }
 .deficit-detail-table td.deficit-name {
-  text-align: left;
+  text-align: center;
 }
 .table--nums .num--deficit {
   font-weight: 700;

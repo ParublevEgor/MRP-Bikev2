@@ -42,8 +42,9 @@ public class OrdersController : ControllerBase
         var boms = await _context.Boms.AsNoTracking().ToListAsync();
         var stockByItem = await GetCurrentStockByItemAsync();
         var deficitByOrderId = ComputeDeficitPerOpenOrderFifo(allOrders, boms, stockByItem, itemsById);
+        var computedCosts = BuildComputedItemCosts(itemsById, boms);
 
-        return Ok(orders.Select(o => ToDto(o, itemsById, deficitByOrderId)));
+        return Ok(orders.Select(o => ToDto(o, itemsById, computedCosts, deficitByOrderId)));
     }
 
     [HttpPost]
@@ -75,7 +76,8 @@ public class OrdersController : ControllerBase
         var boms = await _context.Boms.AsNoTracking().ToListAsync();
         var stockByItem = await GetCurrentStockByItemAsync();
         var deficitByOrderId = ComputeDeficitPerOpenOrderFifo(allOrders, boms, stockByItem, itemsById);
-        return Ok(ToDto(order, itemsById, deficitByOrderId));
+        var computedCosts = BuildComputedItemCosts(itemsById, boms);
+        return Ok(ToDto(order, itemsById, computedCosts, deficitByOrderId));
     }
 
     [HttpPut("{id:int}")]
@@ -111,7 +113,8 @@ public class OrdersController : ControllerBase
         var boms = await _context.Boms.AsNoTracking().ToListAsync();
         var stockByItem = await GetCurrentStockByItemAsync();
         var deficitByOrderId = ComputeDeficitPerOpenOrderFifo(allOrders, boms, stockByItem, itemsById);
-        return Ok(ToDto(order, itemsById, deficitByOrderId));
+        var computedCosts = BuildComputedItemCosts(itemsById, boms);
+        return Ok(ToDto(order, itemsById, computedCosts, deficitByOrderId));
     }
 
     [HttpPost("{id:int}/close")]
@@ -131,7 +134,8 @@ public class OrdersController : ControllerBase
         var boms = await _context.Boms.AsNoTracking().ToListAsync();
         var stockByItem = await GetCurrentStockByItemAsync();
         var deficitByOrderId = ComputeDeficitPerOpenOrderFifo(allOrders, boms, stockByItem, itemsById);
-        return Ok(ToDto(order, itemsById, deficitByOrderId));
+        var computedCosts = BuildComputedItemCosts(itemsById, boms);
+        return Ok(ToDto(order, itemsById, computedCosts, deficitByOrderId));
     }
 
     [HttpPost("{id:int}/open")]
@@ -151,7 +155,8 @@ public class OrdersController : ControllerBase
         var boms = await _context.Boms.AsNoTracking().ToListAsync();
         var stockByItem = await GetCurrentStockByItemAsync();
         var deficitByOrderId = ComputeDeficitPerOpenOrderFifo(allOrders, boms, stockByItem, itemsById);
-        return Ok(ToDto(order, itemsById, deficitByOrderId));
+        var computedCosts = BuildComputedItemCosts(itemsById, boms);
+        return Ok(ToDto(order, itemsById, computedCosts, deficitByOrderId));
     }
 
     [HttpDelete("{id:int}")]
@@ -210,16 +215,10 @@ public class OrdersController : ControllerBase
                 IssueQty = g.Where(x => x.OperationType == StockOperationType.Issue).Sum(x => (decimal?)x.Quantity) ?? 0m
             })
             .ToDictionaryAsync(x => x.ItemId, x => x.ReceiptQty - x.IssueQty);
+
         return stockRaw;
     }
 
-    /// <summary>
-    /// Дефицит по каждому открытому заказу отдельно: потребность в материалах (листья BOM)
-    /// считается после полного разузлования строк заказа; остаток на складе распределяется
-    /// между открытыми заказами последовательно в порядке очереди FIFO — сначала по дате оформления,
-    /// при равной дате по OrderID (раньше зарегистрированный заказ получает склад раньше).
-    /// У закрытых заказов дефицит в расчёте не участвует.
-    /// </summary>
     private static Dictionary<int, List<OrderDeficitLineDto>> ComputeDeficitPerOpenOrderFifo(
         List<Order> allOrders,
         List<Bom> boms,
@@ -234,33 +233,30 @@ public class OrdersController : ControllerBase
         foreach (var kv in stockByItem)
             remaining[kv.Key] = Math.Max(0m, kv.Value);
 
-        var openOrdered = allOrders
-            .Where(o => o.Status == OrderStatus.Open)
+        var ordered = allOrders
             .OrderBy(o => o.OrderDate)
             .ThenBy(o => o.OrderID)
             .ToList();
 
         var result = new Dictionary<int, List<OrderDeficitLineDto>>();
 
-        foreach (var order in openOrdered)
+        foreach (var order in ordered)
         {
             var demandForOrder = new Dictionary<int, decimal>();
             foreach (var line in order.Lines)
-                AddDemandExploded(line.ItemID, line.Quantity, childrenByParent, demandForOrder, new HashSet<int>());
+                ReserveOrExplodeShortage(
+                    line.ItemID,
+                    line.Quantity,
+                    childrenByParent,
+                    remaining,
+                    demandForOrder,
+                    new HashSet<int>());
 
             var lines = new List<OrderDeficitLineDto>();
             foreach (var kv in demandForOrder.OrderBy(x => itemsById.GetValueOrDefault(x.Key)?.ItemName ?? $"ID {x.Key}"))
             {
                 var itemId = kv.Key;
-                var need = kv.Value;
-                var availBefore = remaining.TryGetValue(itemId, out var ab) ? ab : 0m;
-                if (availBefore < 0m)
-                    availBefore = 0m;
-
-                var take = need <= availBefore ? need : availBefore;
-                remaining[itemId] = availBefore - take;
-
-                var deficitQty = need - take;
+                var deficitQty = kv.Value;
                 if (deficitQty <= 0m)
                     continue;
 
@@ -268,8 +264,8 @@ public class OrdersController : ControllerBase
                 {
                     ItemId = itemId,
                     ItemName = itemsById.GetValueOrDefault(itemId)?.ItemName ?? $"ID {itemId}",
-                    RequiredQty = decimal.Round(need, 4, MidpointRounding.AwayFromZero),
-                    InStockQty = decimal.Round(availBefore, 4, MidpointRounding.AwayFromZero),
+                    RequiredQty = decimal.Round(deficitQty, 4, MidpointRounding.AwayFromZero),
+                    InStockQty = 0m,
                     DeficitQty = decimal.Round(deficitQty, 4, MidpointRounding.AwayFromZero)
                 });
             }
@@ -283,37 +279,111 @@ public class OrdersController : ControllerBase
         return result;
     }
 
-    private static void AddDemandExploded(
+    private static void ReserveOrExplodeShortage(
         int itemId,
-        decimal quantity,
+        decimal requiredQty,
         Dictionary<int, List<Bom>> childrenByParent,
-        Dictionary<int, decimal> demand,
+        Dictionary<int, decimal> remaining,
+        Dictionary<int, decimal> deficitLeaves,
         HashSet<int> visiting)
     {
-        if (quantity <= 0)
+        if (requiredQty <= 0m)
+            return;
+
+        var available = Math.Max(0m, remaining.GetValueOrDefault(itemId));
+        var reserve = Math.Min(available, requiredQty);
+        remaining[itemId] = available - reserve;
+        var shortage = requiredQty - reserve;
+        if (shortage <= 0m)
             return;
 
         if (!childrenByParent.TryGetValue(itemId, out var lines) || lines.Count == 0)
         {
-            demand[itemId] = demand.GetValueOrDefault(itemId) + quantity;
+            deficitLeaves[itemId] = deficitLeaves.GetValueOrDefault(itemId) + shortage;
             return;
         }
 
         if (!visiting.Add(itemId))
         {
-            demand[itemId] = demand.GetValueOrDefault(itemId) + quantity;
+            deficitLeaves[itemId] = deficitLeaves.GetValueOrDefault(itemId) + shortage;
             return;
         }
 
         try
         {
             foreach (var bom in lines)
-                AddDemandExploded(bom.ChildItemID, quantity * bom.Quantity, childrenByParent, demand, visiting);
+            {
+                if (bom.Quantity <= 0m)
+                    continue;
+                ReserveOrExplodeShortage(
+                    bom.ChildItemID,
+                    shortage * bom.Quantity,
+                    childrenByParent,
+                    remaining,
+                    deficitLeaves,
+                    visiting);
+            }
         }
         finally
         {
             visiting.Remove(itemId);
         }
+    }
+
+    private static Dictionary<int, decimal?> BuildComputedItemCosts(
+        Dictionary<int, Item> itemsById,
+        List<Bom> boms)
+    {
+        var childrenByParent = boms
+            .GroupBy(x => x.ParentItemID)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var memo = new Dictionary<int, decimal?>();
+        var visiting = new HashSet<int>();
+
+        decimal? ComputeCost(int itemId)
+        {
+            if (memo.TryGetValue(itemId, out var cached))
+                return cached;
+            if (!itemsById.TryGetValue(itemId, out var item))
+                return null;
+            if (!visiting.Add(itemId))
+                return item.UnitCost;
+
+            try
+            {
+                if (!childrenByParent.TryGetValue(itemId, out var lines) || lines.Count == 0)
+                {
+                    memo[itemId] = item.UnitCost;
+                    return item.UnitCost;
+                }
+
+                decimal total = 0;
+                foreach (var line in lines)
+                {
+                    var childCost = ComputeCost(line.ChildItemID);
+                    if (childCost == null)
+                    {
+                        memo[itemId] = item.UnitCost;
+                        return item.UnitCost;
+                    }
+                    total += line.Quantity * childCost.Value;
+                }
+
+                var computed = decimal.Round(total, 2, MidpointRounding.AwayFromZero);
+                memo[itemId] = computed;
+                return computed;
+            }
+            finally
+            {
+                visiting.Remove(itemId);
+            }
+        }
+
+        foreach (var itemId in itemsById.Keys)
+            ComputeCost(itemId);
+
+        return memo;
     }
 
     private async Task EnsureOrderTablesAsync()
@@ -378,17 +448,17 @@ public class OrdersController : ControllerBase
     private static OrderDto ToDto(
         Order order,
         Dictionary<int, Item> itemsById,
+        Dictionary<int, decimal?> computedCosts,
         Dictionary<int, List<OrderDeficitLineDto>> deficitByOrderId)
     {
-        var deficit = order.Status == OrderStatus.Closed
-            ? new List<OrderDeficitLineDto>()
-            : deficitByOrderId.TryGetValue(order.OrderID, out var d)
-                ? d
-                : new List<OrderDeficitLineDto>();
+        var deficit = deficitByOrderId.TryGetValue(order.OrderID, out var d)
+            ? d
+            : new List<OrderDeficitLineDto>();
 
         var totalCost = order.Lines.Sum(l =>
         {
-            var price = itemsById.GetValueOrDefault(l.ItemID)?.SellingPrice ?? 0m;
+            var item = itemsById.GetValueOrDefault(l.ItemID);
+            var price = item?.SellingPrice ?? computedCosts.GetValueOrDefault(l.ItemID) ?? item?.UnitCost ?? 0m;
             return price * l.Quantity;
         });
 

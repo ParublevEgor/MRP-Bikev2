@@ -5,10 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace MRP_Bikev2.Migrations
 {
-    /// <inheritdoc />
     public partial class StockWarehouseAndCascade : Migration
     {
-        /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.CreateTable(
@@ -93,7 +91,6 @@ namespace MRP_Bikev2.Migrations
                 column: "SpecificationId");
         }
 
-        /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(

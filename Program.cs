@@ -15,7 +15,6 @@ if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URL
     builder.WebHost.UseUrls("http://localhost:5249");
 }
 
-// DB
 builder.Services.AddDbContext<BikeContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("Default")));
 
@@ -46,8 +45,6 @@ app.UseSwaggerUI(options =>
     options.SwaggerEndpoint("/swagger/v1/swagger.json", "MRP Bike API v1");
     options.RoutePrefix = "swagger";
 });
-
-//app.UseHttpsRedirection();
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
