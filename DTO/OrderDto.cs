@@ -22,6 +22,9 @@ public class OrderDto
     [JsonPropertyName("deficit")]
     public List<OrderDeficitLineDto> Deficit { get; set; } = [];
 
+    [JsonPropertyName("hasDeficit")]
+    public bool HasDeficit { get; set; }
+
     [JsonPropertyName("items")]
     public List<OrderLineDto> Items { get; set; } = [];
 }

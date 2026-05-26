@@ -10,6 +10,9 @@ public class StockOperationDto
     [JsonPropertyName("specificationId")]
     public int SpecificationId { get; set; }
 
+    [JsonPropertyName("itemId")]
+    public int ItemId { get; set; }
+
     [JsonPropertyName("date")]
     public DateTime Date { get; set; }
 

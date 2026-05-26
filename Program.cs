@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
+using MRP.Api;
 using MRP.Api.Data;
 using System.Text.Json.Serialization;
 
@@ -33,6 +34,13 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<BikeContext>();
+    await db.Database.MigrateAsync();
+    await StockAccounting.RepairWarehouseOperationsAsync(db);
+}
 
 if (app.Environment.IsDevelopment())
     app.UseDeveloperExceptionPage();

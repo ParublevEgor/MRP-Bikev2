@@ -36,7 +36,70 @@ h1 { margin: 0 0 6px; font-size: 1.35rem; font-weight: 700; }
   margin-bottom: 12px;
   font-size: 14px;
 }
-.top-actions { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
+.top-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.planning-asof-bar {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 6px 10px;
+  background: #f3f6fa;
+  border-radius: 8px;
+  border: 1px solid #dbe1e8;
+}
+.planning-asof-bar__label {
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.planning-asof-bar input[type="date"] {
+  font: inherit;
+  padding: 4px 8px;
+}
+.section-actions--orders {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+.orders-deficit-panel {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  font-size: 14px;
+}
+.orders-deficit-panel .orders-deficit-panel__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 12px;
+}
+.orders-deficit-panel .orders-deficit-preview {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.balances-toolbar {
+  margin-bottom: 8px;
+}
+.checkbox-inline {
+  font-size: 14px;
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  max-width: 48rem;
+}
+.checkbox-inline input {
+  margin-top: 3px;
+}
 .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
 .tab {
   border: 1px solid #cfd8e3;

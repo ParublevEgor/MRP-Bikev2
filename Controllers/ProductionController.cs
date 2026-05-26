@@ -6,13 +6,14 @@ using MRP.Api.Models;
 
 namespace MRP.Api.Controllers;
 
+// Производство. Расчёт производственной мощности, приход материалов, производство изделий
+
 [ApiController]
 [Route("api/[controller]")]
 public class ProductionController : ControllerBase
 {
     private readonly BikeContext _context;
 
-    private const string SysReleaseCode = "SYS-GP";
     private const string BikeCode = "BIKE";
 
     public ProductionController(BikeContext context)
@@ -41,6 +42,7 @@ public class ProductionController : ControllerBase
         return Ok(BuildCapacityDtoFromExploded(productItemId, reqPerBike, stock, allBoms));
     }
 
+    // Экономика производства
     [HttpGet("stats")]
     public async Task<ActionResult<ProductionStatsDto>> GetStats([FromQuery] int productItemId)
     {
@@ -63,19 +65,9 @@ public class ProductionController : ControllerBase
             costPerBike += kv.Value * uc;
         }
 
-        decimal producedQty = 0;
-        var sys = await _context.Items.AsNoTracking().FirstOrDefaultAsync(i => i.ItemCode == SysReleaseCode);
-        if (sys != null)
-        {
-            var releaseBom = await _context.Boms.AsNoTracking()
-                .FirstOrDefaultAsync(b => b.ParentItemID == sys.ItemID && b.ChildItemID == productItemId);
-            if (releaseBom != null)
-            {
-                producedQty = await _context.StockOperations
-                    .Where(s => s.SpecificationId == releaseBom.BOMID && s.OperationType == StockOperationType.Receipt)
-                    .SumAsync(s => s.Quantity);
-            }
-        }
+        var producedQty = await _context.StockOperations
+            .Where(s => s.ItemId == productItemId && s.OperationType == StockOperationType.Receipt)
+            .SumAsync(s => s.Quantity);
 
         var totalMaterialCost = producedQty * costPerBike;
         decimal? totalRevenue = null;
@@ -98,6 +90,7 @@ public class ProductionController : ControllerBase
         });
     }
 
+    // Приход материалов
     [HttpPost("receipt-materials")]
     public async Task<IActionResult> ReceiptMaterials([FromBody] ReceiptMaterialsRequestDto? dto)
     {
@@ -136,6 +129,7 @@ public class ProductionController : ControllerBase
             _context.StockOperations.Add(new StockOperation
             {
                 SpecificationId = line.BOMID,
+                ItemId = kv.Key,
                 Date = now,
                 Quantity = kv.Value,
                 OperationType = StockOperationType.Receipt
@@ -175,14 +169,14 @@ public class ProductionController : ControllerBase
         {
             AddIssueLeaves(dto.ProductItemId, dto.Quantity, allBoms, now, _context);
 
-            var releaseBomId = await EnsureReleaseBomAsync(dto.ProductItemId);
-            _context.StockOperations.Add(new StockOperation
+            var receipt = new StockOperation
             {
-                SpecificationId = releaseBomId,
                 Date = now,
                 Quantity = dto.Quantity,
                 OperationType = StockOperationType.Receipt
-            });
+            };
+            await StockAccounting.ConfigureManualOperationAsync(_context, receipt, dto.ProductItemId);
+            _context.StockOperations.Add(receipt);
 
             await _context.SaveChangesAsync();
             await tx.CommitAsync();
@@ -318,6 +312,11 @@ public class ProductionController : ControllerBase
     private static Bom? FindLeafBomLine(int childItemId, List<Bom> allBoms) =>
         allBoms.FirstOrDefault(b => b.ChildItemID == childItemId && !HasChildBom(b.ChildItemID, allBoms));
 
+    // Производство: потребности в материалах для производства
+    // parentItemId - ID позиции номенклатуры
+    // unitsOfParent - количество единиц родительской позиции
+    // allBoms - BOM для позиции номенклатуры
+    // reqPerBike - потребности по позициям номенклатуры
     private static void AddLeafRequirements(
         int parentItemId,
         decimal unitsOfParent,
@@ -326,14 +325,22 @@ public class ProductionController : ControllerBase
     {
         foreach (var bom in allBoms.Where(b => b.ParentItemID == parentItemId))
         {
+            // Количество единиц для подпозиции
             var flow = bom.Quantity * unitsOfParent;
+            // Если подпозиция имеет свои подпозиции, то рекурсивно разбиваем потребности
             if (HasChildBom(bom.ChildItemID, allBoms))
                 AddLeafRequirements(bom.ChildItemID, flow, allBoms, reqPerBike);
             else
+                // Добавляем потребности в словарь
                 reqPerBike[bom.ChildItemID] = reqPerBike.GetValueOrDefault(bom.ChildItemID) + flow;
         }
     }
 
+    // Производство: расход материалов при выпуске
+    // parentItemId - ID позиции номенклатуры
+    // unitsOfParent - количество единиц родительской позиции
+    // allBoms - BOM для позиции номенклатуры
+    // reqPerBike - потребности по позициям номенклатуры
     private static void AddIssueLeaves(
         int parentItemId,
         decimal unitsOfParent,
@@ -343,6 +350,7 @@ public class ProductionController : ControllerBase
     {
         foreach (var bom in allBoms.Where(b => b.ParentItemID == parentItemId))
         {
+            // На листьях создаётся операция
             var qty = bom.Quantity * unitsOfParent;
             if (HasChildBom(bom.ChildItemID, allBoms))
                 AddIssueLeaves(bom.ChildItemID, qty, allBoms, now, context);
@@ -351,6 +359,7 @@ public class ProductionController : ControllerBase
                 context.StockOperations.Add(new StockOperation
                 {
                     SpecificationId = bom.BOMID,
+                    ItemId = bom.ChildItemID,
                     Date = now,
                     Quantity = qty,
                     OperationType = StockOperationType.Issue
@@ -359,6 +368,14 @@ public class ProductionController : ControllerBase
         }
     }
 
+    // Максимальный выпуск изделий из остатков (capacity)
+    // productItemId - ID позиции номенклатуры
+    // reqPerBike - потребности по позициям номенклатуры
+    // stock - остатки по позициям номенклатуры
+    // allBoms - BOM для позиции номенклатуры
+    // lines - линии для отображения
+    // maxQty - максимальное количество изделий
+    // limitingId - ID позиции, ограничивающей максимальное количество изделий
     private static ProductionCapacityDto BuildCapacityDtoFromExploded(
         int productItemId,
         Dictionary<int, decimal> reqPerBike,
@@ -381,6 +398,7 @@ public class ProductionController : ControllerBase
             var s = stock.GetValueOrDefault(childId);
             var name = names.GetValueOrDefault(childId) ?? $"ID {childId}";
 
+            // Максимальное количество изделий из остатков для данной позиции
             int maxFromLine;
             if (per <= 0)
                 maxFromLine = int.MaxValue;
@@ -421,64 +439,6 @@ public class ProductionController : ControllerBase
         };
     }
 
-    private async Task<Dictionary<int, decimal>> GetCurrentStockByItemAsync()
-    {
-        var now = DateTime.UtcNow;
-        var raw = await _context.StockOperations
-            .Join(
-                _context.Boms,
-                s => s.SpecificationId,
-                b => b.BOMID,
-                (s, b) => new { b.ChildItemID, s.OperationType, s.Quantity, s.Date })
-            .Where(x => x.Date <= now)
-            .GroupBy(x => x.ChildItemID)
-            .Select(g => new
-            {
-                ItemId = g.Key,
-                ReceiptQty = g.Where(x => x.OperationType == StockOperationType.Receipt).Sum(x => (decimal?)x.Quantity) ?? 0m,
-                IssueQty = g.Where(x => x.OperationType == StockOperationType.Issue).Sum(x => (decimal?)x.Quantity) ?? 0m
-            })
-            .ToListAsync();
-
-        return raw.ToDictionary(
-            x => x.ItemId,
-            x => x.ReceiptQty - x.IssueQty);
-    }
-
-    private async Task<Item> EnsureSysReleaseItemAsync()
-    {
-        var sys = await _context.Items.FirstOrDefaultAsync(i => i.ItemCode == SysReleaseCode);
-        if (sys != null) return sys;
-
-        sys = new Item
-        {
-            ItemCode = SysReleaseCode,
-            ItemName = "Учёт выпуска ГП",
-            ItemType = ItemType.Assembly,
-            Unit = "шт."
-        };
-        _context.Items.Add(sys);
-        await _context.SaveChangesAsync();
-        return sys;
-    }
-
-    private async Task<int> EnsureReleaseBomAsync(int productItemId)
-    {
-        var sys = await EnsureSysReleaseItemAsync();
-        var existing = await _context.Boms.FirstOrDefaultAsync(b =>
-            b.ParentItemID == sys.ItemID && b.ChildItemID == productItemId);
-
-        if (existing != null)
-            return existing.BOMID;
-
-        var bom = new Bom
-        {
-            ParentItemID = sys.ItemID,
-            ChildItemID = productItemId,
-            Quantity = 1
-        };
-        _context.Boms.Add(bom);
-        await _context.SaveChangesAsync();
-        return bom.BOMID;
-    }
+    private Task<Dictionary<int, decimal>> GetCurrentStockByItemAsync() =>
+        StockAccounting.GetNetStockByItemAsync(_context, DateTime.UtcNow);
 }

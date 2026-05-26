@@ -63,6 +63,15 @@ public class BikeContext : DbContext
             .HasForeignKey(s => s.SpecificationId)
             .OnDelete(DeleteBehavior.Cascade);
 
+        modelBuilder.Entity<StockOperation>()
+            .HasIndex(s => s.ItemId);
+
+        modelBuilder.Entity<StockOperation>()
+            .HasOne<Item>()
+            .WithMany()
+            .HasForeignKey(s => s.ItemId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         modelBuilder.Entity<Order>()
             .Property(o => o.Status)
             .HasConversion<string>()

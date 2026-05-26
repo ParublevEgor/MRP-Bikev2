@@ -1,5 +1,15 @@
 (() => {
-  const state = { items: [], boms: [], stock: [], balances: [], undo: null, stockOpSortMode: "receipt", orders: [] };
+  const state = {
+    items: [],
+    boms: [],
+    stock: [],
+    balances: [],
+    undo: null,
+    stockOpSortMode: "receipt",
+    orders: [],
+    aggregateDeficit: [],
+    deficitAsOf: null,
+  };
 
   const ITEM_TYPE_RU = {
     Product: "Готовая продукция",
@@ -46,6 +56,7 @@
       "операция",
     ),
     specificationId: Number(pick(x, ["specificationId", "SpecificationId"], 0)),
+    itemId: Number(pick(x, ["itemId", "itemID", "ItemId", "ItemID"], 0)),
     date: pick(x, ["date", "Date"], null),
     quantity: Number(pick(x, ["quantity", "Quantity"], 0)),
     operationType: String(pick(x, ["operationType", "OperationType"], "") ?? ""),
@@ -172,17 +183,39 @@
     return Number(v) < 0 ? " num--neg" : "";
   }
 
-  function bomLineLabel(bomId) {
+  function stockItemIdFromBom(bomId) {
     const b = state.boms.find((x) => x.id === bomId);
-    if (!b) return "-";
-    return itemNameById(b.childItemId);
+    return b?.childItemId ?? 0;
   }
 
-  function bomNameOptionsHtml(selectedBomId) {
-    return state.boms
-      .map((b) => {
-        const name = itemNameById(b.childItemId);
-        return `<option value="${b.id}" ${b.id === selectedBomId ? "selected" : ""}>${esc(name)}</option>`;
+  function stockRowItemId(row) {
+    if (row?.itemId > 0) return row.itemId;
+    return stockItemIdFromBom(row?.specificationId);
+  }
+
+  function bomLineLabel(rowOrBomId) {
+    const itemId =
+      typeof rowOrBomId === "object" && rowOrBomId
+        ? stockRowItemId(rowOrBomId)
+        : stockItemIdFromBom(rowOrBomId);
+    return itemId ? itemNameById(itemId) : "-";
+  }
+
+  function isSysItemId(itemId) {
+    const it = state.items.find((x) => x.id === Number(itemId));
+    return it?.code === "SYS-STOCK";
+  }
+
+  function stockCatalogItems() {
+    return state.items
+      .filter((x) => x.code !== "SYS-STOCK")
+      .sort((a, b) => a.name.localeCompare(b.name, "ru"));
+  }
+
+  function stockItemOptionsHtml(selectedItemId) {
+    return stockCatalogItems()
+      .map((x) => {
+        return `<option value="${x.id}" ${Number(selectedItemId) === x.id ? "selected" : ""}>${esc(x.name)}</option>`;
       })
       .join("");
   }
@@ -273,7 +306,7 @@
   }
 
   function stockRowMatchesFilter(x, f) {
-    const specText = bomLineLabel(x.specificationId).toLowerCase();
+    const specText = bomLineLabel(x).toLowerCase();
     if (f.id && !String(x.id).includes(f.id)) return false;
     if (f.spec && !specText.includes(f.spec)) return false;
     if (f.date && localDateYMDFromDate(x.date) !== f.date) return false;
@@ -298,17 +331,19 @@
     btn.title = label;
   }
 
+  function planningAsOfQueryString() {
+    const el = document.getElementById("planningAsOfDate");
+    const v = el?.value?.trim();
+    if (!v) return "";
+    return `?asOf=${encodeURIComponent(v)}`;
+  }
+
   function clearUndoAction() {
     state.undo = null;
     const btn = document.getElementById("btnUndo");
     if (!btn) return;
     btn.disabled = true;
     btn.title = "";
-  }
-
-  async function loadOrders() {
-    const raw = await api("/api/Orders").catch(() => []);
-    state.orders = Array.isArray(raw) ? raw : [];
   }
 
   function stockDateRu(value) {
@@ -326,15 +361,14 @@
 
   function isStockLocked(row) {
     if (!row || row.operationType !== "Receipt") return false;
-    const thisBom = state.boms.find((b) => b.id === row.specificationId);
-    if (!thisBom) return false;
+    const itemId = stockRowItemId(row);
+    if (!itemId) return false;
     const receiptDate = new Date(row.date).getTime();
     if (!Number.isFinite(receiptDate)) return false;
 
     return state.stock.some((s) => {
       if (s.id === row.id || s.operationType !== "Issue") return false;
-      const issueBom = state.boms.find((b) => b.id === s.specificationId);
-      if (!issueBom || issueBom.childItemId !== thisBom.childItemId) return false;
+      if (stockRowItemId(s) !== itemId) return false;
       const issueDate = new Date(s.date).getTime();
       return Number.isFinite(issueDate) && issueDate >= receiptDate;
     });
@@ -354,11 +388,14 @@
 
   async function loadAll() {
     setApiError("");
-    const [itemsRaw, bomsRaw, stockRaw, balancesRaw] = await Promise.all([
+    const q = planningAsOfQueryString();
+    const [itemsRaw, bomsRaw, stockRaw, balancesRaw, ordersRaw, deficitRaw] = await Promise.all([
       api("/api/Items"),
       api("/api/Boms"),
       api("/api/StockOperations").catch(() => []),
-      api("/api/Items/stock-balance").catch(() => []),
+      api(`/api/Items/stock-balance${q}`).catch(() => []),
+      api("/api/Orders").catch(() => []),
+      api(`/api/Orders/deficit${q}`).catch(() => ({ lines: [], asOf: null })),
     ]);
 
     if (!Array.isArray(itemsRaw)) throw new Error("Ответ /api/Items не массив - проверьте консоль сервера и /swagger/v1/swagger.json");
@@ -366,23 +403,35 @@
     if (!Array.isArray(stockRaw)) throw new Error("Ответ /api/StockOperations не массив.");
     if (!Array.isArray(balancesRaw)) throw new Error("Ответ /api/Items/stock-balance не массив.");
 
-    state.items = itemsRaw.map(normalizeItem).filter((x) => x.code !== "SYS-GP");
+    state.orders = Array.isArray(ordersRaw) ? ordersRaw : [];
+    state.aggregateDeficit = Array.isArray(deficitRaw?.lines)
+      ? deficitRaw.lines.map((row) => normalizeDeficitLine(row))
+      : [];
+    state.deficitAsOf = deficitRaw?.asOf ?? null;
+
+    state.items = itemsRaw
+      .map(normalizeItem)
+      .filter((x) => x.code !== "SYS-STOCK");
     state.boms = bomsRaw.map(normalizeBom).filter((b) => {
       const parentRaw = itemsRaw.find((i) => Number(pick(i, ["itemId", "itemID", "ItemID"], 0)) === b.parentItemId);
-      return String(pick(parentRaw, ["itemCode", "ItemCode"], "")) !== "SYS-GP";
+      const parentCode = String(pick(parentRaw, ["itemCode", "ItemCode"], ""));
+      return parentCode !== "SYS-STOCK";
     });
-    const visibleBomIds = new Set(state.boms.map((b) => b.id));
     state.stock = stockRaw
       .map(normalizeStock)
-      .filter((s) => visibleBomIds.has(s.specificationId))
+      .filter((s) => {
+        const itemId = stockRowItemId(s);
+        return itemId > 0 && !isSysItemId(itemId);
+      })
       .sort((a, b) => {
       const ap = a.operationType === "Receipt" ? 0 : 1;
       const bp = b.operationType === "Receipt" ? 0 : 1;
       if (ap !== bp) return ap - bp;
       return new Date(b.date).getTime() - new Date(a.date).getTime();
     });
-    state.balances = balancesRaw.map(normalizeBalance).filter((x) => x.itemCode !== "SYS-GP");
-    await loadOrders();
+    state.balances = balancesRaw
+      .map(normalizeBalance)
+      .filter((x) => x.itemCode !== "SYS-STOCK");
     rebuildDisplayBalances();
 
     renderItems();
@@ -616,14 +665,18 @@
 
     const sorted = [...filtered].sort((a, b) => {
       if (state.stockOpSortMode === "default") {
-        return a.id - b.id;
+        const byDate = new Date(b.date).getTime() - new Date(a.date).getTime();
+        if (byDate !== 0) return byDate;
+        return b.id - a.id;
       }
       const aw = a.operationType === "Receipt" ? 0 : 1;
       const bw = b.operationType === "Receipt" ? 0 : 1;
       if (aw !== bw) {
         return state.stockOpSortMode === "receipt" ? aw - bw : bw - aw;
       }
-      return a.id - b.id;
+      const byDate = new Date(b.date).getTime() - new Date(a.date).getTime();
+      if (byDate !== 0) return byDate;
+      return b.id - a.id;
     });
 
     for (const x of sorted) {
@@ -631,7 +684,7 @@
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${x.id}</td>
-        <td>${esc(bomLineLabel(x.specificationId))}</td>
+        <td>${esc(bomLineLabel(x))}</td>
         <td>${stockDateRu(x.date)}</td>
         <td>${x.quantity}</td>
         <td>${esc(opRu(x.operationType))}</td>
@@ -651,17 +704,41 @@
   }
 
   function renderBalances() {
+    const table = document.getElementById("tableBalances");
+    const theadRow = table?.querySelector("thead tr");
     const tb = document.querySelector("#tableBalances tbody");
-    if (!tb) return;
+    if (!table || !theadRow || !tb) return;
+
+    const collapsed = !!document.getElementById("balancesCollapseRi")?.checked;
+    if (collapsed) {
+      theadRow.innerHTML =
+        "<tr><th>ID</th><th>Код</th><th>Наименование</th><th>Ед.</th><th>Количество</th><th>Заказ</th><th>Итог</th></tr>";
+    } else {
+      theadRow.innerHTML =
+        "<tr><th>ID</th><th>Код</th><th>Наименование</th><th>Ед.</th><th>Приход</th><th>Расход</th><th>Заказ</th><th>Итог</th></tr>";
+    }
+
     tb.innerHTML = "";
     if (!state.balances.length) {
-      tb.innerHTML = '<tr><td colspan="8"><div class="empty">Нет данных об остатках.</div></td></tr>';
+      const colspan = collapsed ? "7" : "8";
+      tb.innerHTML = `<tr><td colspan="${colspan}"><div class="empty">Нет данных об остатках.</div></td></tr>`;
       return;
     }
 
     for (const [idx, x] of state.balances.entries()) {
+      const net = Number(x.receiptQty) - Number(x.issueQty);
       const tr = document.createElement("tr");
-      tr.innerHTML = `
+      if (collapsed) {
+        tr.innerHTML = `
+        <td>${idx + 1}</td>
+        <td class="mono">${esc(x.itemCode || "-")}</td>
+        <td>${esc(x.itemName)}</td>
+        <td>${esc(x.unit || "-")}</td>
+        <td class="num${numNegClass(net)}">${toQty(net)}</td>
+        <td class="num${numNegClass(x.orderQty)}">${toQty(x.orderQty)}</td>
+        <td class="num num--total${numNegClass(x.currentStock)}">${toQty(x.currentStock)}</td>`;
+      } else {
+        tr.innerHTML = `
         <td>${idx + 1}</td>
         <td class="mono">${esc(x.itemCode || "-")}</td>
         <td>${esc(x.itemName)}</td>
@@ -670,6 +747,7 @@
         <td class="num${numNegClass(x.issueQty)}">${toQty(x.issueQty)}</td>
         <td class="num${numNegClass(x.orderQty)}">${toQty(x.orderQty)}</td>
         <td class="num num--total${numNegClass(x.currentStock)}">${toQty(x.currentStock)}</td>`;
+      }
       tb.appendChild(tr);
     }
   }
@@ -690,12 +768,12 @@
     return items.map((x) => String(Number(x.quantity) || 0)).join(", ");
   }
 
-  function formatDeficit(order) {
-    const lines = Array.isArray(order?.deficit) ? order.deficit : [];
+  function formatAggregateDeficitText() {
+    const lines = Array.isArray(state.aggregateDeficit) ? state.aggregateDeficit : [];
     if (!lines.length) return "Нет";
     return lines
-      .slice(0, 3)
-      .map((x) => `${x.itemName || `ID ${x.itemId}`}: -${toQty(x.deficitQty)}`)
+      .slice(0, 5)
+      .map((x) => `${x.itemName || `ID ${x.itemId}`}: ${toQty(Math.max(0, Number(x.deficitQty) || 0))}`)
       .join("; ");
   }
 
@@ -714,9 +792,24 @@
     return it?.unit ? String(it.unit) : "—";
   }
 
-  function openOrderDeficitModal(order) {
-    const orderId = Number(pick(order, ["orderId", "orderID", "OrderID"], 0));
-    const lines = Array.isArray(order?.deficit) ? order.deficit.map(normalizeDeficitLine) : [];
+  function renderOrdersDeficitPanel() {
+    const host = document.getElementById("ordersDeficitPanel");
+    if (!host) return;
+    const preview = formatAggregateDeficitText();
+    const asOfHint = state.deficitAsOf
+      ? `<span style="font-size:13px;color:#64748b;">Снимок склада: ${esc(stockDateRu(state.deficitAsOf))}</span>`
+      : "";
+    host.innerHTML = `
+      <div class="orders-deficit-panel__row">
+        <span class="orders-deficit-preview" title="${esc(preview)}"><strong>Дефицит (все заказы):</strong> ${esc(preview)}</span>
+        ${asOfHint}
+        <button type="button" class="btn btn--small" id="btnShowAggregateDeficit">Подробнее</button>
+      </div>`;
+    host.querySelector("#btnShowAggregateDeficit")?.addEventListener("click", () => openAggregateDeficitModal());
+  }
+
+  function openAggregateDeficitModal() {
+    const lines = Array.isArray(state.aggregateDeficit) ? state.aggregateDeficit.map(normalizeDeficitLine) : [];
     const sorted = [...lines].sort((a, b) => {
       const db = b.deficitQty - a.deficitQty;
       if (db !== 0) return db;
@@ -726,7 +819,7 @@
     let rowsHtml;
     if (!sorted.length) {
       rowsHtml =
-        '<tr><td colspan="7"><div class="empty">По этому заказу дефицита нет: с учётом очереди FIFO склад покрывает разузлованную потребность.</div></td></tr>';
+        '<tr><td colspan="7"><div class="empty">Сводного дефицита нет: с учётом очереди FIFO склад покрывает разузлованную потребность по всем заказам.</div></td></tr>';
     } else {
       rowsHtml = sorted
         .map((row, idx) => {
@@ -743,8 +836,9 @@
         .join("");
     }
 
+    const titleExtra = state.deficitAsOf ? ` (${stockDateRu(state.deficitAsOf)})` : "";
     openModal(
-      orderId ? `Дефицит (заказ № ${orderId})` : "Дефицит",
+      `Дефицит по всем заказам${titleExtra}`,
       `<div class="table-wrap">
         <table class="table table--nums table--compact deficit-detail-table">
           <thead>
@@ -766,6 +860,7 @@
   }
 
   function renderOrders() {
+    renderOrdersDeficitPanel();
     const tb = document.querySelector("#tableOrders tbody");
     if (!tb) return;
     tb.innerHTML = "";
@@ -779,17 +874,26 @@
       .sort((a, b) => {
         const ida = Number(pick(a, ["orderId", "orderID", "OrderID"], 0));
         const idb = Number(pick(b, ["orderId", "orderID", "OrderID"], 0));
-        return ida - idb;
+        if (ida !== idb) return idb - ida;
+        const byOrderDate = new Date(b.orderDate).getTime() - new Date(a.orderDate).getTime();
+        if (byOrderDate !== 0) return byOrderDate;
+        return new Date(b.dueDate).getTime() - new Date(a.dueDate).getTime();
       });
     if (!base.length) {
-      tb.innerHTML = '<tr><td colspan="9"><div class="empty">Нет заказов.</div></td></tr>';
+      tb.innerHTML = '<tr><td colspan="8"><div class="empty">Нет заказов.</div></td></tr>';
     } else if (!rows.length) {
       tb.innerHTML =
-        '<tr><td colspan="9"><div class="empty">Нет заказов по текущему фильтру — измените условия или нажмите «Сбросить».</div></td></tr>';
+        '<tr><td colspan="8"><div class="empty">Нет заказов по текущему фильтру — измените условия или нажмите «Сбросить».</div></td></tr>';
     } else {
       rows.forEach((o) => {
         const orderId = Number(pick(o, ["orderId", "orderID", "OrderID"], 0));
         const isClosed = o.orderType === "closed";
+        const hasDeficit = Boolean(pick(o, ["hasDeficit", "HasDeficit"], false));
+        const closeDisabled = isClosed || hasDeficit;
+        const closeTitle =
+          hasDeficit && !isClosed
+            ? "title=\"Нельзя закрыть: по заказу есть дефицит по складу (FIFO). Устраните дефицит или измените заказ.\""
+            : "";
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td class="mono">${orderId}</td>
@@ -799,26 +903,13 @@
           <td>${esc(stockDateRu(o.dueDate))}</td>
           <td>${esc(orderTypeRu(o.orderType))}</td>
           <td>${toMoney(o.totalCostRub)}</td>
-          <td class="orders-deficit-cell">
-            <span class="orders-deficit-preview" title="${esc(formatDeficit(o))}">${esc(formatDeficit(o))}</span>
-            <button class="btn btn--small" type="button" data-show-deficit="${orderId}">Подробнее</button>
-          </td>
           <td>
             <button class="btn btn--small" data-edit-order="${orderId}" type="button" ${isClosed ? "disabled" : ""}>Изменить</button>
-            <button class="btn btn--small" data-close-order="${orderId}" type="button" ${isClosed ? "disabled" : ""}>Закрыть</button>
+            <button class="btn btn--small" data-close-order="${orderId}" type="button" ${closeDisabled ? "disabled" : ""} ${closeTitle}>Закрыть</button>
             <button class="btn btn--small btn--danger" data-del-order="${orderId}" type="button">Удалить</button>
           </td>`;
         tb.appendChild(tr);
       });
-      tb.querySelectorAll("[data-show-deficit]").forEach((b) =>
-        b.addEventListener("click", () => {
-          const orderId = Number(b.dataset.showDeficit);
-          const order = state.orders.find(
-            (x) => Number(pick(x, ["orderId", "orderID", "OrderID"], 0)) === orderId,
-          );
-          if (order) openOrderDeficitModal(order);
-        }),
-      );
       tb.querySelectorAll("[data-edit-order]").forEach((b) =>
         b.addEventListener("click", () => {
           const orderId = Number(b.dataset.editOrder);
@@ -832,6 +923,10 @@
           const orderId = Number(b.dataset.closeOrder);
           const order = state.orders.find((x) => Number(x.orderId) === orderId);
           if (!order || order.orderType === "closed") return;
+          if (Boolean(pick(order, ["hasDeficit", "HasDeficit"], false))) {
+            toast("Нельзя закрыть заказ: есть дефицит по складу (FIFO).");
+            return;
+          }
           try {
             await api(`/api/Orders/${orderId}/close`, { method: "POST" });
             setUndoAction("Отмена закрытия заказа", () => api(`/api/Orders/${orderId}/open`, { method: "POST" }));
@@ -1066,15 +1161,19 @@
     }
     const row = id ? state.stock.find((x) => x.id === id) : null;
     const edit = !!row;
-    const spec = row?.specificationId ?? state.boms[0].id;
-
-    const bomOptions = bomNameOptionsHtml(spec);
+    const catalog = stockCatalogItems();
+    if (!catalog.length) {
+      toast("Нет позиций номенклатуры для складского учёта.");
+      return;
+    }
+    const defaultItemId = row ? stockRowItemId(row) : catalog[0]?.id;
+    const itemOptions = stockItemOptionsHtml(defaultItemId);
 
     openModal(
       edit ? `Операция, ID ${id}` : "Новая операция",
       `<form id="formStock" class="form-grid">
         <div class="form-row"><label>Тип операции</label><select name="operationType">${opTypeOptionsHtml(row?.operationType || "Receipt")}</select></div>
-        <div class="form-row"><label>Наименование</label><select name="specificationId">${bomOptions}</select></div>
+        <div class="form-row"><label>Наименование</label><select name="itemId">${itemOptions}</select></div>
         <div class="form-row"><label>Дата и время</label><input name="date" type="datetime-local" value="${dateToLocalInput(row?.date)}" required /></div>
         <div class="form-row"><label>Количество</label><input name="quantity" type="number" step="1" min="1" value="${row?.quantity ?? 1}" required /></div>
         <div class="form-actions">
@@ -1088,9 +1187,12 @@
     document.getElementById("formStock").addEventListener("submit", async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
+      const itemId = Number(fd.get("itemId"));
+      if (!itemId) return toast("Выберите позицию номенклатуры.");
       const payload = {
         stockOperationId: edit ? id : 0,
-        specificationId: Number(fd.get("specificationId")),
+        itemId,
+        specificationId: 0,
         date: new Date(String(fd.get("date"))).toISOString(),
         quantity: Number(fd.get("quantity")),
         operationType: String(fd.get("operationType")),
@@ -1101,6 +1203,7 @@
         const prev = row
           ? {
               stockOperationId: row.id,
+              itemId: stockRowItemId(row),
               specificationId: row.specificationId,
               date: row.date,
               quantity: row.quantity,
@@ -1135,6 +1238,7 @@
     }
     const editing = editOrderId != null;
     const current = editing ? state.orders.find((x) => Number(x.orderId) === Number(editOrderId)) : null;
+    const hasDeficit = Boolean(pick(current || {}, ["hasDeficit", "HasDeficit"], false));
     if (editing && !current) {
       toast("Заказ не найден");
       return;
@@ -1155,7 +1259,7 @@
         <div class="form-row"><label>Тип заказа</label>
           <select name="orderType" ${editing && current?.orderType === "closed" ? "disabled" : ""}>
             <option value="open" ${(current?.orderType || "open") === "open" ? "selected" : ""}>Открытый</option>
-            <option value="closed" ${current?.orderType === "closed" ? "selected" : ""}>Закрытый</option>
+            <option value="closed" ${current?.orderType === "closed" ? "selected" : ""} ${editing && hasDeficit ? "disabled" : ""}>Закрытый</option>
           </select>
         </div>
         <div class="form-actions">
@@ -1337,6 +1441,7 @@
       if (row) {
         const payload = {
           stockOperationId: 0,
+          itemId: stockRowItemId(row),
           specificationId: row.specificationId,
           date: row.date,
           quantity: row.quantity,
@@ -1463,6 +1568,18 @@
       setApiError("Ошибка обновления: " + m);
     }
   });
+  document.getElementById("btnPlanningAsOfApply")?.addEventListener("click", async () => {
+    try {
+      await loadAll();
+      setApiError("");
+      toast("Остатки и дефицит пересчитаны", true);
+    } catch (err) {
+      const m = err?.message || String(err);
+      toast(m);
+      setApiError("Ошибка пересчёта: " + m);
+    }
+  });
+  document.getElementById("balancesCollapseRi")?.addEventListener("change", () => renderBalances());
   document.getElementById("ordersToolbar")?.addEventListener("input", () => renderOrders());
   document.getElementById("ordersToolbar")?.addEventListener("change", () => renderOrders());
   document.getElementById("orderFilterReset")?.addEventListener("click", () => {

@@ -1,12 +1,13 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using MRP.Api;
 using MRP.Api.Data;
 using MRP.Api.DTO;
 using MRP.Api.Models;
-using System.Collections.Generic;
-using System.Threading.Tasks;
 
 namespace MRP.Api.Controllers;
+
+// Номенклатура (Остатки)
 
 [ApiController]
 [Route("api/[controller]")]
@@ -40,30 +41,24 @@ public class ItemsController : ControllerBase
     }
 
     [HttpGet("stock-balance")]
-    public async Task<ActionResult<IEnumerable<ItemStockBalanceDto>>> GetStockBalance()
+    public async Task<ActionResult<IEnumerable<ItemStockBalanceDto>>> GetStockBalance([FromQuery] string? asOf)
     {
-        var asOf = DateTime.UtcNow;
-        var raw = await _context.StockOperations
-            .Join(
-                _context.Boms,
-                s => s.SpecificationId,
-                b => b.BOMID,
-                (s, b) => new { b.ChildItemID, s.OperationType, s.Quantity, s.Date })
-            .Where(x => x.Quantity != 0 && x.Date <= asOf)
-            .GroupBy(x => x.ChildItemID)
-            .Select(g => new
-            {
-                ItemId = g.Key,
-                ReceiptQty = g.Where(x => x.OperationType == StockOperationType.Receipt).Sum(x => (decimal?)x.Quantity) ?? 0m,
-                IssueQty = g.Where(x => x.OperationType == StockOperationType.Issue).Sum(x => (decimal?)x.Quantity) ?? 0m
-            })
-            .ToListAsync();
+        var asOfUtc = PlanningAsOf.ResolveStockAsOfUtc(asOf);
+        var stockCutoffUtc = PlanningAsOf.StockOperationsCutoffUtc(asOf);
+        var byItemAgg = await StockAccounting.GetReceiptIssueByItemAsync(_context, stockCutoffUtc);
+        var raw = byItemAgg.Select(kv => new
+        {
+            ItemId = kv.Key,
+            kv.Value.ReceiptQty,
+            kv.Value.IssueQty
+        }).ToList();
 
         var byItem = raw.ToDictionary(
             x => x.ItemId,
             x => new { x.ReceiptQty, x.IssueQty });
 
         var result = await _context.Items
+            .Where(i => i.ItemCode != StockAccounting.SysStockCode)
             .OrderBy(i => i.ItemID)
             .Select(i => new ItemStockBalanceDto
             {
@@ -81,12 +76,14 @@ public class ItemsController : ControllerBase
             .OrderBy(o => o.OrderDate)
             .ThenBy(o => o.OrderID)
             .ToListAsync();
+        // Физический склад до планирования заказов
         var stockByItem = byItem.ToDictionary(x => x.Key, x => x.Value.ReceiptQty - x.Value.IssueQty);
-        var orderQty = BuildPlannedOrderQty(allOrders, boms, stockByItem);
-        var closedOrderQty = BuildPlannedOrderQty(
-            allOrders.Where(o => o.Status == OrderStatus.Closed).ToList(),
-            boms,
-            stockByItem);
+
+        var ordersForPlan = PlanningAsOf.ShouldFilterOrdersByDate(asOf)
+            ? allOrders.Where(o => o.OrderDate <= asOfUtc).ToList()
+            : allOrders;
+
+        var (orderQty, remainingAfterOrders) = BuildPlannedOrderQtyWithRemaining(ordersForPlan, boms, stockByItem);
 
         foreach (var item in result)
         {
@@ -103,7 +100,8 @@ public class ItemsController : ControllerBase
 
             item.OrderQty = orderQty.GetValueOrDefault(item.ItemID);
             item.AdjustmentQty = 0;
-            item.CurrentStock = item.ReceiptQty - item.IssueQty - closedOrderQty.GetValueOrDefault(item.ItemID);
+            // Остаток после симуляции заказов
+            item.CurrentStock = Math.Max(0m, remainingAfterOrders.GetValueOrDefault(item.ItemID));
         }
 
         return Ok(result);
@@ -174,21 +172,17 @@ public class ItemsController : ControllerBase
         await _context.SaveChangesAsync();
 
         return Ok(ToDto(item));
-    }
-
+    }  
+    
+    // Удаление позиции номенклатуры
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
     {
         var itemExists = await _context.Items.AnyAsync(i => i.ItemID == id);
         if (!itemExists) return NotFound();
 
-        var stockByChild = await _context.StockOperations
-            .Join(
-                _context.Boms,
-                s => s.SpecificationId,
-                b => b.BOMID,
-                (s, b) => new { b.ChildItemID, s.OperationType, s.Quantity })
-            .Where(x => x.ChildItemID == id)
+        var stockByItem = await _context.StockOperations
+            .Where(s => s.ItemId == id)
             .GroupBy(_ => 1)
             .Select(g => new
             {
@@ -197,7 +191,7 @@ public class ItemsController : ControllerBase
             })
             .FirstOrDefaultAsync();
 
-        var currentStock = stockByChild == null ? 0m : stockByChild.ReceiptQty - stockByChild.IssueQty;
+        var currentStock = stockByItem == null ? 0m : stockByItem.ReceiptQty - stockByItem.IssueQty;
         if (currentStock > 0)
             return BadRequest("Нельзя удалить позицию: по ней есть положительные остатки.");
 
@@ -238,7 +232,8 @@ public class ItemsController : ControllerBase
         return null;
     }
 
-    private static Dictionary<int, decimal> BuildPlannedOrderQty(
+    // Разузловывание заказов по BOM
+    private static (Dictionary<int, decimal> PlannedQty, Dictionary<int, decimal> RemainingStock) BuildPlannedOrderQtyWithRemaining(
         List<Order> orders,
         List<Bom> boms,
         Dictionary<int, decimal> stockByItem)
@@ -265,7 +260,7 @@ public class ItemsController : ControllerBase
                     new HashSet<int>());
         }
 
-        return planned;
+        return (planned, remaining);
     }
 
     private static void ReserveOrExplodeForPlan(
@@ -278,10 +273,11 @@ public class ItemsController : ControllerBase
     {
         if (requiredQty <= 0m)
             return;
-
+        // Для каждой позиции в заказе: колонка "Заказ"
         planned[itemId] = planned.GetValueOrDefault(itemId) + requiredQty;
-
+        // Остаток после выделения на заказ
         var available = Math.Max(0m, remaining.GetValueOrDefault(itemId));
+        // Резерв со склада
         var reserve = Math.Min(available, requiredQty);
         remaining[itemId] = available - reserve;
         var shortage = requiredQty - reserve;
@@ -296,6 +292,7 @@ public class ItemsController : ControllerBase
 
         try
         {
+            // Разузловывание на подпозиции
             foreach (var bom in lines)
             {
                 if (bom.Quantity <= 0m)
@@ -315,6 +312,7 @@ public class ItemsController : ControllerBase
         }
     }
 
+    // Расчёт себестоимости по BOM
     private async Task<Dictionary<int, decimal?>> BuildComputedItemCostsAsync()
     {
         var items = await _context.Items.AsNoTracking().ToListAsync();

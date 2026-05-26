@@ -8,6 +8,8 @@ using System.Threading.Tasks;
 
 namespace MRP.Api.Controllers;
 
+// Спецификация
+
 [ApiController]
 [Route("api/[controller]")]
 public class BomsController : ControllerBase
@@ -89,6 +91,7 @@ public class BomsController : ControllerBase
         return Ok(ToDto(bom));
     }
 
+    // Удаление строки BOM
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
     {

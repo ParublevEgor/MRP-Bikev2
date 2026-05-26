@@ -10,6 +10,9 @@ public class StockOperation
 
     public int SpecificationId { get; set; }
 
+    /// <summary>Позиция номенклатуры, по которой меняется остаток.</summary>
+    public int ItemId { get; set; }
+
     public DateTime Date { get; set; }
 
     [Column(TypeName = "decimal(18,4)")]

@@ -1,11 +1,14 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using MRP.Api;
 using MRP.Api.Data;
 using MRP.Api.DTO;
 using MRP.Api.Models;
 using System.Globalization;
 
 namespace MRP.Api.Controllers;
+
+// Заказы. Потребность по заказам, дефицит, правила закрытия
 
 [ApiController]
 [Route("api/[controller]")]
@@ -16,6 +19,26 @@ public class OrdersController : ControllerBase
     public OrdersController(BikeContext context)
     {
         _context = context;
+    }
+
+    [HttpGet("deficit")]
+    public async Task<ActionResult<OrderDeficitSummaryDto>> GetAggregateDeficit([FromQuery] string? asOf)
+    {
+        await EnsureOrderTablesAsync();
+        var asOfUtc = PlanningAsOf.ResolveStockAsOfUtc(asOf);
+        var stockCutoffUtc = PlanningAsOf.StockOperationsCutoffUtc(asOf);
+        var allOrders = await _context.Orders
+            .Include(o => o.Lines)
+            .ToListAsync();
+        var ordered = PlanningAsOf.ShouldFilterOrdersByDate(asOf)
+            ? allOrders.Where(o => o.OrderDate <= asOfUtc).OrderBy(o => o.OrderDate).ThenBy(o => o.OrderID).ToList()
+            : allOrders.OrderBy(o => o.OrderDate).ThenBy(o => o.OrderID).ToList();
+
+        var itemsById = await _context.Items.AsNoTracking().ToDictionaryAsync(i => i.ItemID);
+        var boms = await _context.Boms.AsNoTracking().ToListAsync();
+        var stockByItem = await GetStockByItemAsOfAsync(stockCutoffUtc);
+        var lines = ComputeAggregateDeficitFifo(ordered, boms, stockByItem, itemsById);
+        return Ok(new OrderDeficitSummaryDto { AsOf = asOfUtc, Lines = lines });
     }
 
     [HttpGet]
@@ -40,11 +63,16 @@ public class OrdersController : ControllerBase
 
         var itemsById = await _context.Items.AsNoTracking().ToDictionaryAsync(i => i.ItemID);
         var boms = await _context.Boms.AsNoTracking().ToListAsync();
-        var stockByItem = await GetCurrentStockByItemAsync();
-        var deficitByOrderId = ComputeDeficitPerOpenOrderFifo(allOrders, boms, stockByItem, itemsById);
         var computedCosts = BuildComputedItemCosts(itemsById, boms);
+        var stockNow = await GetStockByItemAsOfAsync(DateTime.UtcNow);
+        var fifoOrders = allOrders.OrderBy(o => o.OrderDate).ThenBy(o => o.OrderID).ToList();
+        var deficitPerOrder = ComputeDeficitPerOpenOrderFifo(fifoOrders, boms, stockNow, itemsById);
 
-        return Ok(orders.Select(o => ToDto(o, itemsById, computedCosts, deficitByOrderId)));
+        return Ok(orders.Select(o => ToDto(
+            o,
+            itemsById,
+            computedCosts,
+            deficitPerOrder.TryGetValue(o.OrderID, out var d) && d.Count > 0)));
     }
 
     [HttpPost]
@@ -71,13 +99,11 @@ public class OrdersController : ControllerBase
 
         _context.Orders.Add(order);
         await _context.SaveChangesAsync();
-        var allOrders = await _context.Orders.Include(x => x.Lines).ToListAsync();
         var itemsById = await _context.Items.AsNoTracking().ToDictionaryAsync(i => i.ItemID);
         var boms = await _context.Boms.AsNoTracking().ToListAsync();
-        var stockByItem = await GetCurrentStockByItemAsync();
-        var deficitByOrderId = ComputeDeficitPerOpenOrderFifo(allOrders, boms, stockByItem, itemsById);
         var computedCosts = BuildComputedItemCosts(itemsById, boms);
-        return Ok(ToDto(order, itemsById, computedCosts, deficitByOrderId));
+        var hasDeficit = await ComputeHasDeficitForOrderAsync(order.OrderID);
+        return Ok(ToDto(order, itemsById, computedCosts, hasDeficit));
     }
 
     [HttpPut("{id:int}")]
@@ -98,7 +124,6 @@ public class OrdersController : ControllerBase
 
         order.OrderDate = dto.OrderDate;
         order.DueDate = dto.DueDate;
-        order.Status = status.Value;
 
         _context.OrderLines.RemoveRange(order.Lines);
         order.Lines = dto.Items.Select(x => new OrderLine
@@ -107,14 +132,20 @@ public class OrdersController : ControllerBase
             Quantity = x.Quantity
         }).ToList();
 
+        if (status.Value == OrderStatus.Closed)
+        {
+            var block = await TryGetCloseBlockedByDeficitMessageAsync(order.OrderID);
+            if (block != null)
+                return BadRequest(block);
+        }
+
+        order.Status = status.Value;
         await _context.SaveChangesAsync();
-        var allOrders = await _context.Orders.Include(x => x.Lines).ToListAsync();
         var itemsById = await _context.Items.AsNoTracking().ToDictionaryAsync(i => i.ItemID);
         var boms = await _context.Boms.AsNoTracking().ToListAsync();
-        var stockByItem = await GetCurrentStockByItemAsync();
-        var deficitByOrderId = ComputeDeficitPerOpenOrderFifo(allOrders, boms, stockByItem, itemsById);
         var computedCosts = BuildComputedItemCosts(itemsById, boms);
-        return Ok(ToDto(order, itemsById, computedCosts, deficitByOrderId));
+        var hasDeficit = await ComputeHasDeficitForOrderAsync(order.OrderID);
+        return Ok(ToDto(order, itemsById, computedCosts, hasDeficit));
     }
 
     [HttpPost("{id:int}/close")]
@@ -127,15 +158,16 @@ public class OrdersController : ControllerBase
         if (order == null) return NotFound();
         if (order.Status == OrderStatus.Closed) return BadRequest("Заказ уже закрыт.");
 
+        var blockClose = await TryGetCloseBlockedByDeficitMessageAsync(id);
+        if (blockClose != null)
+            return BadRequest(blockClose);
+
         order.Status = OrderStatus.Closed;
         await _context.SaveChangesAsync();
-        var allOrders = await _context.Orders.Include(x => x.Lines).ToListAsync();
         var itemsById = await _context.Items.AsNoTracking().ToDictionaryAsync(i => i.ItemID);
         var boms = await _context.Boms.AsNoTracking().ToListAsync();
-        var stockByItem = await GetCurrentStockByItemAsync();
-        var deficitByOrderId = ComputeDeficitPerOpenOrderFifo(allOrders, boms, stockByItem, itemsById);
         var computedCosts = BuildComputedItemCosts(itemsById, boms);
-        return Ok(ToDto(order, itemsById, computedCosts, deficitByOrderId));
+        return Ok(ToDto(order, itemsById, computedCosts, hasDeficitUnderFifo: false));
     }
 
     [HttpPost("{id:int}/open")]
@@ -150,13 +182,11 @@ public class OrdersController : ControllerBase
 
         order.Status = OrderStatus.Open;
         await _context.SaveChangesAsync();
-        var allOrders = await _context.Orders.Include(x => x.Lines).ToListAsync();
         var itemsById = await _context.Items.AsNoTracking().ToDictionaryAsync(i => i.ItemID);
         var boms = await _context.Boms.AsNoTracking().ToListAsync();
-        var stockByItem = await GetCurrentStockByItemAsync();
-        var deficitByOrderId = ComputeDeficitPerOpenOrderFifo(allOrders, boms, stockByItem, itemsById);
         var computedCosts = BuildComputedItemCosts(itemsById, boms);
-        return Ok(ToDto(order, itemsById, computedCosts, deficitByOrderId));
+        var hasDeficit = await ComputeHasDeficitForOrderAsync(order.OrderID);
+        return Ok(ToDto(order, itemsById, computedCosts, hasDeficit));
     }
 
     [HttpDelete("{id:int}")]
@@ -197,30 +227,16 @@ public class OrdersController : ControllerBase
         return null;
     }
 
-    private async Task<Dictionary<int, decimal>> GetCurrentStockByItemAsync()
-    {
-        var now = DateTime.UtcNow;
-        var stockRaw = await _context.StockOperations
-            .Join(
-                _context.Boms,
-                s => s.SpecificationId,
-                b => b.BOMID,
-                (s, b) => new { b.ChildItemID, s.OperationType, s.Quantity, s.Date })
-            .Where(x => x.Date <= now)
-            .GroupBy(x => x.ChildItemID)
-            .Select(g => new
-            {
-                ItemId = g.Key,
-                ReceiptQty = g.Where(x => x.OperationType == StockOperationType.Receipt).Sum(x => (decimal?)x.Quantity) ?? 0m,
-                IssueQty = g.Where(x => x.OperationType == StockOperationType.Issue).Sum(x => (decimal?)x.Quantity) ?? 0m
-            })
-            .ToDictionaryAsync(x => x.ItemId, x => x.ReceiptQty - x.IssueQty);
+    private Task<Dictionary<int, decimal>> GetStockByItemAsOfAsync(DateTime asOfUtc) =>
+        StockAccounting.GetNetStockByItemAsync(_context, asOfUtc);
 
-        return stockRaw;
-    }
-
-    private static Dictionary<int, List<OrderDeficitLineDto>> ComputeDeficitPerOpenOrderFifo(
-        List<Order> allOrders,
+    // Суммирование дефицита по всем открытым заказам
+    // ordersInFifoOrder - заказы в порядке FIFO
+    // boms - BOM для позиции номенклатуры
+    // stockByItem - остатки по позициям номенклатуры
+    // itemsById - словарь позиций номенклатуры
+    private static List<OrderDeficitLineDto> ComputeAggregateDeficitFifo(
+        List<Order> ordersInFifoOrder,
         List<Bom> boms,
         Dictionary<int, decimal> stockByItem,
         Dictionary<int, Item> itemsById)
@@ -233,17 +249,67 @@ public class OrdersController : ControllerBase
         foreach (var kv in stockByItem)
             remaining[kv.Key] = Math.Max(0m, kv.Value);
 
-        var ordered = allOrders
-            .OrderBy(o => o.OrderDate)
-            .ThenBy(o => o.OrderID)
-            .ToList();
+        var globalQty = new Dictionary<int, decimal>();
 
-        var result = new Dictionary<int, List<OrderDeficitLineDto>>();
-
-        foreach (var order in ordered)
+        foreach (var order in ordersInFifoOrder)
         {
             var demandForOrder = new Dictionary<int, decimal>();
             foreach (var line in order.Lines)
+                ReserveOrExplodeShortage(
+                    line.ItemID,
+                    line.Quantity,
+                    childrenByParent,
+                    remaining,
+                    demandForOrder,
+                    new HashSet<int>());
+
+            foreach (var kv in demandForOrder)
+            {
+                if (kv.Value <= 0m)
+                    continue;
+                globalQty[kv.Key] = globalQty.GetValueOrDefault(kv.Key) + kv.Value;
+            }
+        }
+
+        return globalQty
+            .Where(kv => kv.Value > 0m)
+            .Select(kv => new OrderDeficitLineDto
+            {
+                ItemId = kv.Key,
+                ItemName = itemsById.GetValueOrDefault(kv.Key)?.ItemName ?? $"ID {kv.Key}",
+                RequiredQty = decimal.Round(kv.Value, 4, MidpointRounding.AwayFromZero),
+                InStockQty = 0m,
+                DeficitQty = decimal.Round(kv.Value, 4, MidpointRounding.AwayFromZero)
+            })
+            .OrderByDescending(x => x.DeficitQty)
+            .ThenBy(x => x.ItemName)
+            .ToList();
+    }
+    // Дефицит по открытым заказам
+    // ordersInFifoOrder - заказы в порядке FIFO
+    // boms - BOM для позиции номенклатуры
+    // stockByItem - остатки по позициям номенклатуры
+    // itemsById - словарь позиций номенклатуры
+    private static Dictionary<int, List<OrderDeficitLineDto>> ComputeDeficitPerOpenOrderFifo(
+        List<Order> ordersInFifoOrder,
+        List<Bom> boms,
+        Dictionary<int, decimal> stockByItem,
+        Dictionary<int, Item> itemsById)
+    {
+        var childrenByParent = boms
+            .GroupBy(x => x.ParentItemID)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        var remaining = new Dictionary<int, decimal>();
+        foreach (var kv in stockByItem)
+            remaining[kv.Key] = Math.Max(0m, kv.Value);
+
+        var result = new Dictionary<int, List<OrderDeficitLineDto>>();
+
+        foreach (var ord in ordersInFifoOrder)
+        {
+            var demandForOrder = new Dictionary<int, decimal>();
+            foreach (var line in ord.Lines)
                 ReserveOrExplodeShortage(
                     line.ItemID,
                     line.Quantity,
@@ -270,7 +336,7 @@ public class OrdersController : ControllerBase
                 });
             }
 
-            result[order.OrderID] = lines
+            result[ord.OrderID] = lines
                 .OrderByDescending(x => x.DeficitQty)
                 .ThenBy(x => x.ItemName)
                 .ToList();
@@ -279,6 +345,10 @@ public class OrdersController : ControllerBase
         return result;
     }
 
+    // Разузловывание дефицита по BOM (резервирование/нехватка)
+    // Общий виртуальный склад remaining (накопленный дефицит)
+    // Дефицит в конечных позициях deficitLeaves (дефицит для каждой позиции)
+    // visiting (для циклических ссылок)
     private static void ReserveOrExplodeShortage(
         int itemId,
         decimal requiredQty,
@@ -445,16 +515,44 @@ public class OrdersController : ControllerBase
         return (utc, utc + granularity);
     }
 
+    private async Task<Dictionary<int, List<OrderDeficitLineDto>>> GetDeficitPerOrderNowAsync()
+    {
+        var allOrders = await _context.Orders
+            .Include(o => o.Lines)
+            .OrderBy(o => o.OrderDate)
+            .ThenBy(o => o.OrderID)
+            .ToListAsync();
+        var itemsById = await _context.Items.AsNoTracking().ToDictionaryAsync(i => i.ItemID);
+        var boms = await _context.Boms.AsNoTracking().ToListAsync();
+        var stock = await GetStockByItemAsOfAsync(DateTime.UtcNow);
+        return ComputeDeficitPerOpenOrderFifo(allOrders, boms, stock, itemsById);
+    }
+
+    private async Task<bool> ComputeHasDeficitForOrderAsync(int orderId)
+    {
+        var entity = await _context.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.OrderID == orderId);
+        if (entity == null || entity.Status == OrderStatus.Closed)
+            return false;
+
+        var map = await GetDeficitPerOrderNowAsync();
+        return map.TryGetValue(orderId, out var lines) && lines.Count > 0;
+    }
+
+    private async Task<string?> TryGetCloseBlockedByDeficitMessageAsync(int orderId)
+    {
+        var map = await GetDeficitPerOrderNowAsync();
+        if (!map.TryGetValue(orderId, out var lines) || lines.Count == 0)
+            return null;
+
+        return "Устраните дефицит или измените заказ, затем повторите.";
+    }
+
     private static OrderDto ToDto(
         Order order,
         Dictionary<int, Item> itemsById,
         Dictionary<int, decimal?> computedCosts,
-        Dictionary<int, List<OrderDeficitLineDto>> deficitByOrderId)
+        bool hasDeficitUnderFifo = false)
     {
-        var deficit = deficitByOrderId.TryGetValue(order.OrderID, out var d)
-            ? d
-            : new List<OrderDeficitLineDto>();
-
         var totalCost = order.Lines.Sum(l =>
         {
             var item = itemsById.GetValueOrDefault(l.ItemID);
@@ -469,7 +567,8 @@ public class OrdersController : ControllerBase
             DueDate = order.DueDate,
             OrderType = order.Status == OrderStatus.Closed ? "closed" : "open",
             TotalCostRub = decimal.Round(totalCost, 2, MidpointRounding.AwayFromZero),
-            Deficit = deficit,
+            Deficit = [],
+            HasDeficit = order.Status == OrderStatus.Open && hasDeficitUnderFifo,
             Items = order.Lines.Select(l => new OrderLineDto
             {
                 ItemId = l.ItemID,

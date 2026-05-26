@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>MRP система модели «Велосипед»</title>
-  <link rel="stylesheet" href="css/app.css?v=18" />
+  <link rel="stylesheet" href="css/app.css?v=23" />
 </head>
 <body>
   <div class="container">
@@ -135,6 +135,12 @@
     </section>
 
     <section id="view-balances" class="view">
+      <div class="section-actions balances-toolbar">
+        <label class="checkbox-inline">
+          <input type="checkbox" id="balancesCollapseRi" />
+          Только количество
+        </label>
+      </div>
       <div class="table-wrap">
       <table class="table table--nums" id="tableBalances">
         <thead>
@@ -155,9 +161,14 @@
     </section>
 
     <section id="view-orders" class="view">
-      <div class="section-actions">
+      <div class="section-actions section-actions--orders">
+        <span class="planning-asof-bar">
+          <label class="planning-asof-bar__label">Остатки и дефицит на дату <input type="date" id="planningAsOfDate" /></label>
+          <button class="btn btn--small" id="btnPlanningAsOfApply" type="button">Пересчитать</button>
+        </span>
         <button class="btn btn--primary" id="btnAddOrder" type="button">Добавить заказ</button>
       </div>
+      <div id="ordersDeficitPanel" class="orders-deficit-panel" aria-live="polite"></div>
       <div class="stock-toolbar" id="ordersToolbar">
         <div class="stock-toolbar__head">
           <span class="stock-toolbar__title">Поиск по заказам</span>
@@ -217,7 +228,6 @@
             <th>Дата готовности</th>
             <th>Тип заказа</th>
             <th>Стоимость</th>
-            <th>Дефицит</th>
             <th>Действие</th>
           </tr>
         </thead>
@@ -240,6 +250,6 @@
     </div>
   </div>
 
-  <script src="js/app.js?v=18"></script>
+  <script src="js/app.js?v=23"></script>
 </body>
 </html>
