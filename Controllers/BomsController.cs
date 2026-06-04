@@ -4,6 +4,7 @@ using MRP.Api.Data;
 using MRP.Api.DTO;
 using MRP.Api.Models;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace MRP.Api.Controllers;
@@ -146,7 +147,51 @@ public class BomsController : ControllerBase
         if (duplicate)
             return "Такая пара «родитель → компонент» уже есть в спецификации.";
 
+        if (await WouldCloseBomCycleAsync(dto, excludeBomId))
+            return "Спецификация замкнётся в цикл: из компонента уже есть путь к родителю по текущим строкам BOM.";
+
         return null;
+    }
+
+    private async Task<bool> WouldCloseBomCycleAsync(BomDto dto, int? excludeBomId)
+    {
+        var edges = await _context.Boms
+            .AsNoTracking()
+            .Where(b => !excludeBomId.HasValue || b.BOMID != excludeBomId.Value)
+            .Select(b => new { b.ParentItemID, b.ChildItemID })
+            .ToListAsync();
+
+        var adj = edges
+            .GroupBy(e => e.ParentItemID)
+            .ToDictionary(g => g.Key, g => g.Select(x => x.ChildItemID).ToList());
+
+        return HasDirectedPath(adj, dto.ChildItemID, dto.ParentItemID);
+    }
+
+    private static bool HasDirectedPath(Dictionary<int, List<int>> adj, int start, int target)
+    {
+        if (start == target)
+            return true;
+
+        var queue = new Queue<int>();
+        var seen = new HashSet<int> { start };
+        queue.Enqueue(start);
+
+        while (queue.Count > 0)
+        {
+            var x = queue.Dequeue();
+            if (!adj.TryGetValue(x, out var nexts))
+                continue;
+            foreach (var y in nexts)
+            {
+                if (y == target)
+                    return true;
+                if (seen.Add(y))
+                    queue.Enqueue(y);
+            }
+        }
+
+        return false;
     }
 
     private static BomDto ToDto(Bom b) => new()

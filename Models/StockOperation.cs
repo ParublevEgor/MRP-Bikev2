@@ -3,6 +3,8 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace MRP.Api.Models;
 
+// Склад. Движение по позиции номенклатуры (ItemId).
+
 public class StockOperation
 {
     [Key]
@@ -10,7 +12,6 @@ public class StockOperation
 
     public int SpecificationId { get; set; }
 
-    /// <summary>Позиция номенклатуры, по которой меняется остаток.</summary>
     public int ItemId { get; set; }
 
     public DateTime Date { get; set; }

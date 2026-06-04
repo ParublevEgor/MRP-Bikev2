@@ -4,8 +4,8 @@ using MRP.Api.Models;
 
 namespace MRP.Api;
 
-
 // Складской учёт по позиции номенклатуры
+// Остатки после заказов
 
 public static class StockAccounting
 {
@@ -63,7 +63,6 @@ public static class StockAccounting
     // operation - операция прихода материалов
     // itemId - ID позиции номенклатуры
     // Возвращает ID строки BOM
-    // Конфигурирование операции прихода материалов
     public static async Task ConfigureManualOperationAsync(BikeContext context, StockOperation operation, int itemId)
     {
         // Проверка на существование позиции номенклатуры
@@ -131,7 +130,6 @@ public static class StockAccounting
     }
 
     // Удаление устаревшей служебной позиции SYS-GP
-    // context - контекст базы данных
     public static async Task RemoveLegacySysGpAsync(BikeContext context)
     {
         const string legacyCode = "SYS-GP";
@@ -159,9 +157,12 @@ public static class StockAccounting
         await context.SaveChangesAsync();
     }
 
-    public static async Task<Dictionary<int, decimal>> GetNetStockByItemAsync(
+    // Получает остатки по позициям номенклатуры
+    // Возвращает словарь (ItemId, NetStock) - остатки по позициям номенклатуры
+    // Используется в таблице "Остатки", где нужен только один столбец "Итого"
+    public static async Task<Dictionary<int, decimal>> GetNetStockByItemAsync( // вход в план заказов
         BikeContext context,
-        DateTime? cutoffUtc = null)
+        DateTime? cutoffUtc = null) // Дата отсечения
     {
         var systemIds = await GetSystemItemIdsAsync(context);
         var query = ExcludeSystemItems(context.StockOperations.AsNoTracking(), systemIds);
@@ -184,7 +185,8 @@ public static class StockAccounting
     }
 
     // Получает остатки по позициям номенклатуры
-    public static async Task<Dictionary<int, (decimal ReceiptQty, decimal IssueQty)>> GetReceiptIssueByItemAsync(
+    // Возвращает пару (ReceiptQty, IssueQty) - используется в таблице "Остатки", где нужны отдельные колонки
+    public static async Task<Dictionary<int, (decimal ReceiptQty, decimal IssueQty)>> GetReceiptIssueByItemAsync( // в DTO
         BikeContext context,
         DateTime? cutoffUtc = null)
     {

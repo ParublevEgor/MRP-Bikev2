@@ -3,10 +3,11 @@ using Microsoft.EntityFrameworkCore;
 using MRP.Api.Data;
 using MRP.Api.DTO;
 using MRP.Api.Models;
+using System.Collections.Generic;
 
 namespace MRP.Api.Controllers;
 
-// Производство. Расчёт производственной мощности, приход материалов, производство изделий
+// Производство
 
 [ApiController]
 [Route("api/[controller]")]
@@ -34,7 +35,7 @@ public class ProductionController : ControllerBase
             return BadRequest("У изделия нет строк спецификации.");
 
         var reqPerBike = new Dictionary<int, decimal>();
-        AddLeafRequirements(productItemId, 1m, allBoms, reqPerBike);
+        AddLeafRequirements(productItemId, 1m, allBoms, reqPerBike, new HashSet<int>());
         if (reqPerBike.Count == 0)
             return BadRequest("Спецификация не раскрывается до материалов (проверьте BOM).");
 
@@ -53,7 +54,7 @@ public class ProductionController : ControllerBase
 
         var allBoms = await _context.Boms.Include(b => b.ChildItem).ToListAsync();
         var reqPerBike = new Dictionary<int, decimal>();
-        AddLeafRequirements(productItemId, 1m, allBoms, reqPerBike);
+        AddLeafRequirements(productItemId, 1m, allBoms, reqPerBike, new HashSet<int>());
 
         var itemIds = reqPerBike.Keys.ToList();
         var items = await _context.Items.Where(i => itemIds.Contains(i.ItemID)).ToDictionaryAsync(i => i.ItemID);
@@ -116,7 +117,7 @@ public class ProductionController : ControllerBase
             return BadRequest("Нет спецификации: сначала создайте BOM или используйте кнопку без выбора изделия (каталог BIKE).");
 
         var req = new Dictionary<int, decimal>();
-        AddLeafRequirements(productId, bikeCount, allBoms, req);
+        AddLeafRequirements(productId, bikeCount, allBoms, req, new HashSet<int>());
         if (req.Count == 0)
             return BadRequest("Нет материалов для прихода (проверьте BOM).");
 
@@ -156,7 +157,7 @@ public class ProductionController : ControllerBase
             return BadRequest("Нет спецификации для изделия.");
 
         var reqPerBike = new Dictionary<int, decimal>();
-        AddLeafRequirements(dto.ProductItemId, 1m, allBoms, reqPerBike);
+        AddLeafRequirements(dto.ProductItemId, 1m, allBoms, reqPerBike, new HashSet<int>());
         var stock = await GetCurrentStockByItemAsync();
         var cap = BuildCapacityDtoFromExploded(dto.ProductItemId, reqPerBike, stock, allBoms);
 
@@ -167,7 +168,7 @@ public class ProductionController : ControllerBase
         await using var tx = await _context.Database.BeginTransactionAsync();
         try
         {
-            AddIssueLeaves(dto.ProductItemId, dto.Quantity, allBoms, now, _context);
+            AddIssueLeaves(dto.ProductItemId, dto.Quantity, allBoms, now, _context, new HashSet<int>());
 
             var receipt = new StockOperation
             {
@@ -321,18 +322,29 @@ public class ProductionController : ControllerBase
         int parentItemId,
         decimal unitsOfParent,
         List<Bom> allBoms,
-        Dictionary<int, decimal> reqPerBike)
+        Dictionary<int, decimal> reqPerBike,
+        HashSet<int> visiting)
     {
-        foreach (var bom in allBoms.Where(b => b.ParentItemID == parentItemId))
+        if (!visiting.Add(parentItemId))
+            return;
+
+        try
         {
-            // Количество единиц для подпозиции
-            var flow = bom.Quantity * unitsOfParent;
-            // Если подпозиция имеет свои подпозиции, то рекурсивно разбиваем потребности
-            if (HasChildBom(bom.ChildItemID, allBoms))
-                AddLeafRequirements(bom.ChildItemID, flow, allBoms, reqPerBike);
-            else
-                // Добавляем потребности в словарь
-                reqPerBike[bom.ChildItemID] = reqPerBike.GetValueOrDefault(bom.ChildItemID) + flow;
+            foreach (var bom in allBoms.Where(b => b.ParentItemID == parentItemId))
+            {
+                // Количество единиц для подпозиции
+                var flow = bom.Quantity * unitsOfParent;
+                // Если подпозиция имеет свои подпозиции, то рекурсивно разбиваем потребности
+                if (HasChildBom(bom.ChildItemID, allBoms))
+                    AddLeafRequirements(bom.ChildItemID, flow, allBoms, reqPerBike, visiting);
+                else
+                    // Добавляем потребности в словарь
+                    reqPerBike[bom.ChildItemID] = reqPerBike.GetValueOrDefault(bom.ChildItemID) + flow;
+            }
+        }
+        finally
+        {
+            visiting.Remove(parentItemId);
         }
     }
 
@@ -346,25 +358,36 @@ public class ProductionController : ControllerBase
         decimal unitsOfParent,
         List<Bom> allBoms,
         DateTime now,
-        BikeContext context)
+        BikeContext context,
+        HashSet<int> visiting)
     {
-        foreach (var bom in allBoms.Where(b => b.ParentItemID == parentItemId))
+        if (!visiting.Add(parentItemId))
+            return;
+
+        try
         {
-            // На листьях создаётся операция
-            var qty = bom.Quantity * unitsOfParent;
-            if (HasChildBom(bom.ChildItemID, allBoms))
-                AddIssueLeaves(bom.ChildItemID, qty, allBoms, now, context);
-            else
+            foreach (var bom in allBoms.Where(b => b.ParentItemID == parentItemId))
             {
-                context.StockOperations.Add(new StockOperation
+                // На листьях создаётся операция
+                var qty = bom.Quantity * unitsOfParent;
+                if (HasChildBom(bom.ChildItemID, allBoms))
+                    AddIssueLeaves(bom.ChildItemID, qty, allBoms, now, context, visiting);
+                else
                 {
-                    SpecificationId = bom.BOMID,
-                    ItemId = bom.ChildItemID,
-                    Date = now,
-                    Quantity = qty,
-                    OperationType = StockOperationType.Issue
-                });
+                    context.StockOperations.Add(new StockOperation
+                    {
+                        SpecificationId = bom.BOMID,
+                        ItemId = bom.ChildItemID,
+                        Date = now,
+                        Quantity = qty,
+                        OperationType = StockOperationType.Issue
+                    });
+                }
             }
+        }
+        finally
+        {
+            visiting.Remove(parentItemId);
         }
     }
 

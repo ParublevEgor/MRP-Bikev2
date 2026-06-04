@@ -9,6 +9,7 @@ using System.Globalization;
 namespace MRP.Api.Controllers;
 
 // Заказы. Потребность по заказам, дефицит, правила закрытия
+// Дефицит
 
 [ApiController]
 [Route("api/[controller]")]
@@ -230,7 +231,7 @@ public class OrdersController : ControllerBase
     private Task<Dictionary<int, decimal>> GetStockByItemAsOfAsync(DateTime asOfUtc) =>
         StockAccounting.GetNetStockByItemAsync(_context, asOfUtc);
 
-    // Суммирование дефицита по всем открытым заказам
+    // Расчёт общего дефицита
     // ordersInFifoOrder - заказы в порядке FIFO
     // boms - BOM для позиции номенклатуры
     // stockByItem - остатки по позициям номенклатуры
@@ -241,36 +242,42 @@ public class OrdersController : ControllerBase
         Dictionary<int, decimal> stockByItem,
         Dictionary<int, Item> itemsById)
     {
+        // Формировапние дерева BOM
         var childrenByParent = boms
             .GroupBy(x => x.ParentItemID)
             .ToDictionary(g => g.Key, g => g.ToList());
 
-        var remaining = new Dictionary<int, decimal>();
+        var remaining = new Dictionary<int, decimal>(); // виртуальный склад
         foreach (var kv in stockByItem)
             remaining[kv.Key] = Math.Max(0m, kv.Value);
 
-        var globalQty = new Dictionary<int, decimal>();
+        var globalQty = new Dictionary<int, decimal>(); // дефицит по всем заказам
 
+        // Расчёт дефицита по каждому заказу
         foreach (var order in ordersInFifoOrder)
         {
+            // для каждого заказа:
             var demandForOrder = new Dictionary<int, decimal>();
             foreach (var line in order.Lines)
+                // для кажой строки заказа
                 ReserveOrExplodeShortage(
                     line.ItemID,
                     line.Quantity,
                     childrenByParent,
                     remaining,
-                    demandForOrder,
-                    new HashSet<int>());
+                    demandForOrder, // дефицит по заказу
+                    new HashSet<int>()); // посещаемые позиции
 
+            // для каждой позиции в дефиците по заказу
             foreach (var kv in demandForOrder)
             {
+                // если дефицит нет, то пропускаем
                 if (kv.Value <= 0m)
                     continue;
                 globalQty[kv.Key] = globalQty.GetValueOrDefault(kv.Key) + kv.Value;
             }
         }
-
+        // вернуть дефицит как список OrderDeficitLineDto (только > 0)
         return globalQty
             .Where(kv => kv.Value > 0m)
             .Select(kv => new OrderDeficitLineDto
@@ -285,6 +292,7 @@ public class OrdersController : ControllerBase
             .ThenBy(x => x.ItemName)
             .ToList();
     }
+
     // Дефицит по открытым заказам
     // ordersInFifoOrder - заказы в порядке FIFO
     // boms - BOM для позиции номенклатуры
@@ -296,6 +304,7 @@ public class OrdersController : ControllerBase
         Dictionary<int, decimal> stockByItem,
         Dictionary<int, Item> itemsById)
     {
+        // Формировапние дерева BOM
         var childrenByParent = boms
             .GroupBy(x => x.ParentItemID)
             .ToDictionary(g => g.Key, g => g.ToList());
@@ -359,38 +368,50 @@ public class OrdersController : ControllerBase
     {
         if (requiredQty <= 0m)
             return;
-
+        // Остаток после выделения на заказ
         var available = Math.Max(0m, remaining.GetValueOrDefault(itemId));
+        // Резерв со склада
         var reserve = Math.Min(available, requiredQty);
+        // Остаток после резервирования
         remaining[itemId] = available - reserve;
+        // Дефицит
         var shortage = requiredQty - reserve;
+        // Если дефицит нет, то выходим
         if (shortage <= 0m)
             return;
-
+        // Если нет подпозиций, то добавляем дефицит в конечную позицию
         if (!childrenByParent.TryGetValue(itemId, out var lines) || lines.Count == 0)
         {
             deficitLeaves[itemId] = deficitLeaves.GetValueOrDefault(itemId) + shortage;
             return;
         }
-
+        // Если уже посещали эту позицию, то добавляем дефицит в конечную позицию
         if (!visiting.Add(itemId))
         {
             deficitLeaves[itemId] = deficitLeaves.GetValueOrDefault(itemId) + shortage;
             return;
         }
-
+        // Посещаем позицию
         try
         {
+            // Разузловывание на подпозиции
             foreach (var bom in lines)
             {
+                // Если количество компонента на единицу родительской позиции нет, то пропускаем
                 if (bom.Quantity <= 0m)
                     continue;
+                // Разузловывание на подпозиции
                 ReserveOrExplodeShortage(
                     bom.ChildItemID,
+                    // Дефицит на подпозицию
                     shortage * bom.Quantity,
+                    // Дерево BOM
                     childrenByParent,
+                    // Остаток после выделения на заказ
                     remaining,
+                    // Дефицит в конечных позициях
                     deficitLeaves,
+                    // Посещаем позицию
                     visiting);
             }
         }
@@ -399,7 +420,7 @@ public class OrdersController : ControllerBase
             visiting.Remove(itemId);
         }
     }
-
+    // Расчёт себестоимости по BOM
     private static Dictionary<int, decimal?> BuildComputedItemCosts(
         Dictionary<int, Item> itemsById,
         List<Bom> boms)
@@ -455,7 +476,7 @@ public class OrdersController : ControllerBase
 
         return memo;
     }
-
+    // Создание таблиц заказов
     private async Task EnsureOrderTablesAsync()
     {
         await _context.Database.ExecuteSqlRawAsync("""

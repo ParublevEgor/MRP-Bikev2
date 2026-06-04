@@ -1002,7 +1002,7 @@
     openModal(
       edit ? `Номенклатура, ID ${id}` : "Новая позиция",
       `<form id="formItem" class="form-grid">
-        <div class="form-row"><label>Код (необязательно, уникальный)</label><input name="itemCode" value="${esc(row?.code || "")}" /></div>
+        <div class="form-row"><label>Код (необязательно)</label><input name="itemCode" value="${esc(row?.code || "")}" /></div>
         <div class="form-row"><label>Наименование</label><input name="itemName" required value="${esc(row?.name || "")}" /></div>
         <div class="form-row"><label>Тип</label><select name="itemType">${itemTypeOptionsHtml(row?.type || "Component")}</select></div>
         <div class="form-row"><label>Единица измерения</label><input name="unit" value="${esc(row?.unit || "")}" placeholder="шт., кг…" /></div>

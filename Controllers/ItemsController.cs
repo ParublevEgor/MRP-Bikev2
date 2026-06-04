@@ -40,24 +40,25 @@ public class ItemsController : ControllerBase
         return Ok(ToDto(item, computedCosts.GetValueOrDefault(item.ItemID)));
     }
 
+    // остатки на дату + план по заказам
     [HttpGet("stock-balance")]
     public async Task<ActionResult<IEnumerable<ItemStockBalanceDto>>> GetStockBalance([FromQuery] string? asOf)
     {
         var asOfUtc = PlanningAsOf.ResolveStockAsOfUtc(asOf);
         var stockCutoffUtc = PlanningAsOf.StockOperationsCutoffUtc(asOf);
         var byItemAgg = await StockAccounting.GetReceiptIssueByItemAsync(_context, stockCutoffUtc);
-        var raw = byItemAgg.Select(kv => new
+        var raw = byItemAgg.Select(kv => new // промежуточный список raw
         {
             ItemId = kv.Key,
             kv.Value.ReceiptQty,
             kv.Value.IssueQty
         }).ToList();
 
-        var byItem = raw.ToDictionary(
+        var byItem = raw.ToDictionary( // словарь byItem
             x => x.ItemId,
             x => new { x.ReceiptQty, x.IssueQty });
 
-        var result = await _context.Items
+        var result = await _context.Items // справочник товарв из Items
             .Where(i => i.ItemCode != StockAccounting.SysStockCode)
             .OrderBy(i => i.ItemID)
             .Select(i => new ItemStockBalanceDto
@@ -69,25 +70,32 @@ public class ItemsController : ControllerBase
             })
             .ToListAsync();
 
-        var boms = await _context.Boms.AsNoTracking().ToListAsync();
-        var allOrders = await _context.Orders
+        var boms = await _context.Boms.AsNoTracking().ToListAsync(); // загрузка списка BOM
+        var allOrders = await _context.Orders // загрузка списка заказов
             .AsNoTracking()
             .Include(o => o.Lines)
             .OrderBy(o => o.OrderDate)
             .ThenBy(o => o.OrderID)
             .ToListAsync();
-        // Физический склад до планирования заказов
-        var stockByItem = byItem.ToDictionary(x => x.Key, x => x.Value.ReceiptQty - x.Value.IssueQty);
 
+        // Текущий физический остаток по ItemID
+        // из byItem, то есть только из фактических складских операций 
+        var stockByItem = byItem.ToDictionary(x => x.Key, x => x.Value.ReceiptQty - x.Value.IssueQty); 
+
+        // Какие заказы учитывать в планировании
+        // если дата не указана, то фильтрация не производится
+        // если дата указана, то фильтруются заказы, которые меньше или равны дате
         var ordersForPlan = PlanningAsOf.ShouldFilterOrdersByDate(asOf)
             ? allOrders.Where(o => o.OrderDate <= asOfUtc).ToList()
             : allOrders;
 
+        // сколько единиц товара заказано и сколько осталось после заказов
         var (orderQty, remainingAfterOrders) = BuildPlannedOrderQtyWithRemaining(ordersForPlan, boms, stockByItem);
 
         foreach (var item in result)
         {
-            if (!byItem.TryGetValue(item.ItemID, out var agg))
+            // приклеивание к каждому товару фактические суммы прихода и расхода
+            if (!byItem.TryGetValue(item.ItemID, out var agg)) // agg - найденное значение словаря
             {
                 item.ReceiptQty = 0;
                 item.IssueQty = 0;
@@ -97,10 +105,10 @@ public class ItemsController : ControllerBase
                 item.ReceiptQty = agg.ReceiptQty;
                 item.IssueQty = agg.IssueQty;
             }
-
+            // плановая потребность под заказы (+ BOM)
             item.OrderQty = orderQty.GetValueOrDefault(item.ItemID);
-            item.AdjustmentQty = 0;
-            // Остаток после симуляции заказов
+            item.AdjustmentQty = 0; // корректировка остатка
+            // Остаток после резерва под заказы
             item.CurrentStock = Math.Max(0m, remainingAfterOrders.GetValueOrDefault(item.ItemID));
         }
 
@@ -173,7 +181,7 @@ public class ItemsController : ControllerBase
 
         return Ok(ToDto(item));
     }  
-    
+
     // Удаление позиции номенклатуры
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id)
@@ -233,24 +241,29 @@ public class ItemsController : ControllerBase
     }
 
     // Разузловывание заказов по BOM
+    // Возвращает словари: сколько единиц товара заказано и сколько осталось после заказов
     private static (Dictionary<int, decimal> PlannedQty, Dictionary<int, decimal> RemainingStock) BuildPlannedOrderQtyWithRemaining(
         List<Order> orders,
         List<Bom> boms,
         Dictionary<int, decimal> stockByItem)
     {
+        // Формировапние дерева BOM
         var childrenByParent = boms
             .GroupBy(x => x.ParentItemID)
             .ToDictionary(g => g.Key, g => g.ToList());
 
-        var remaining = new Dictionary<int, decimal>();
+        var remaining = new Dictionary<int, decimal>(); // остаток после заказов
+        // заполнение остатка из stockByItem
         foreach (var kv in stockByItem)
             remaining[kv.Key] = Math.Max(0m, kv.Value);
 
-        var planned = new Dictionary<int, decimal>();
+        var planned = new Dictionary<int, decimal>(); // сколько единиц товара заказано
 
-        foreach (var order in orders)
+        foreach (var order in orders) // для каждого заказа
         {
+            // для каждой позиции в заказе
             foreach (var line in order.Lines)
+            // разузловывание на подпозиции
                 ReserveOrExplodeForPlan(
                     line.ItemID,
                     line.Quantity,
@@ -263,24 +276,25 @@ public class ItemsController : ControllerBase
         return (planned, remaining);
     }
 
+    // Разузловывание дефицита по BOM
     private static void ReserveOrExplodeForPlan(
-        int itemId,
-        decimal requiredQty,
-        Dictionary<int, List<Bom>> childrenByParent,
-        Dictionary<int, decimal> remaining,
-        Dictionary<int, decimal> planned,
-        HashSet<int> visiting)
+        int itemId, // какя позиция сейчас обрабатывается
+        decimal requiredQty, // потребность по позиции
+        Dictionary<int, List<Bom>> childrenByParent, // дерево BOM
+        Dictionary<int, decimal> remaining, // остаток после предыдущих заказов
+        Dictionary<int, decimal> planned, // сколько единиц товара заказано
+        HashSet<int> visiting) // ID позиций, которые уже были посещены
     {
         if (requiredQty <= 0m)
             return;
         // Для каждой позиции в заказе: колонка "Заказ"
         planned[itemId] = planned.GetValueOrDefault(itemId) + requiredQty;
-        // Остаток после выделения на заказ
+        // сколько можно отдать под этот шаг
         var available = Math.Max(0m, remaining.GetValueOrDefault(itemId));
-        // Резерв со склада
+        // Резерв со склада. Не больше, чем остаток и потребность
         var reserve = Math.Min(available, requiredQty);
-        remaining[itemId] = available - reserve;
-        var shortage = requiredQty - reserve;
+        remaining[itemId] = available - reserve; // уменьшение остатка после резерва
+        var shortage = requiredQty - reserve; // дефицит
         if (shortage <= 0m)
             return;
 
@@ -321,10 +335,11 @@ public class ItemsController : ControllerBase
         var childrenByParent = boms
             .GroupBy(x => x.ParentItemID)
             .ToDictionary(g => g.Key, g => g.ToList());
-
+        // словарь memo для кэширования результатов
         var memo = new Dictionary<int, decimal?>();
         var visiting = new HashSet<int>();
 
+        // Расчёт себестоимости по BOM
         decimal? ComputeCost(int itemId)
         {
             if (memo.TryGetValue(itemId, out var cached))
@@ -345,13 +360,14 @@ public class ItemsController : ControllerBase
                 decimal total = 0;
                 foreach (var line in lines)
                 {
+                    // Расчёт себестоимости по BOM для подпозиции
                     var childCost = ComputeCost(line.ChildItemID);
                     if (childCost == null)
                     {
                         memo[itemId] = item.UnitCost;
                         return item.UnitCost;
                     }
-                    total += line.Quantity * childCost.Value;
+                    total += line.Quantity * childCost.Value; // сумма себестоимости по BOM для подпозиции
                 }
 
                 var computed = decimal.Round(total, 2, MidpointRounding.AwayFromZero);
@@ -364,9 +380,9 @@ public class ItemsController : ControllerBase
             }
         }
 
+        // Расчёт себестоимости по BOM для всех позиций
         foreach (var item in items)
             ComputeCost(item.ItemID);
-
         return memo;
     }
 
